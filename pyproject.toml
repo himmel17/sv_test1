@@ -1,0 +1,19 @@
+[project]
+name = "sv-test1"
+version = "0.1.0"
+description = "SystemVerilog SerDes Test Environment with Verilator and GTKWave"
+readme = "README.md"
+requires-python = ">=3.12.11"
+dependencies = [
+    "pyyaml>=6.0",
+]
+
+[dependency-groups]
+dev = [
+    "black>=25.11.0",
+    "flake8>=7.3.0",
+    "isort>=7.0.0",
+    "pickleshare>=0.7.5",
+    "pyright>=1.1.407",
+    "python-lsp-server>=1.13.1",
+]

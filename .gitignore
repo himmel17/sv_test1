@@ -1,0 +1,28 @@
+# Verilator generated files
+sim/obj_dir/
+sim/*.vcd
+sim/waves/*.vcd
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+
+# Python virtual environment (uv)
+.venv/
+venv/
+
+# Editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Log files
+*.log

@@ -1,0 +1,19 @@
+# Development dependencies for SystemVerilog test framework
+#
+# NOTE: This file is maintained for backward compatibility with pip.
+# For modern Python package management, use pyproject.toml with uv:
+#   uv sync              # Install runtime + dev dependencies (default)
+#   uv sync --no-dev     # Install runtime dependencies only
+#
+# See pyproject.toml for the canonical dependency specification.
+
+# Include runtime dependencies
+-r requirements.txt
+
+# Development tools
+black>=25.11.0
+flake8>=7.3.0
+isort>=7.0.0
+pickleshare>=0.7.5
+pyright>=1.1.407
+python-lsp-server>=1.13.1

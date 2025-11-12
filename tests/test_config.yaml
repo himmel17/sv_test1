@@ -1,0 +1,83 @@
+# SystemVerilog Test Configuration
+# This file defines all testbenches for the project
+
+project:
+  rtl_dir: rtl
+  tb_dir: tb
+  sim_dir: sim
+  obj_dir: sim/obj_dir
+  waves_dir: sim/waves
+
+verilator:
+  common_flags:
+    - --binary
+    - --timing
+    - -Wall
+    - --trace
+    - -Wno-TIMESCALEMOD
+  execution_timeout: "30s"  # Real-world execution timeout (Verilator freeze protection)
+
+tests:
+  # 8-bit counter test
+  - name: counter
+    enabled: true
+    description: "8-bit synchronous counter with overflow detection"
+    top_module: counter_tb
+    testbench_file: counter_tb.sv
+    rtl_files:
+      - counter.sv
+    verilator_extra_flags: []
+    sim_timeout: "50us"  # Simulation timeout (passed to testbench via -GSIM_TIMEOUT)
+
+  # 4-bit 1:4 demultiplexer test
+  - name: demux_4bit
+    enabled: true
+    description: "4-bit 1:4 demultiplexer"
+    top_module: demux_4bit_tb
+    testbench_file: demux_4bit_tb.sv
+    rtl_files:
+      - demux_4bit.sv
+    verilator_extra_flags: []
+    sim_timeout: "10us"  # Simulation timeout (passed to testbench via -GSIM_TIMEOUT)
+
+  # SerDes Transmitter (template - uncomment when ready)
+  # - name: serdes_tx
+  #   enabled: true
+  #   description: "SerDes transmitter module"
+  #   top_module: serdes_tx_tb
+  #   testbench_file: serdes_tx_tb.sv
+  #   rtl_files:
+  #     - serdes_tx.sv
+  #     - serializer.sv
+  #   verilator_extra_flags:
+  #     - --trace-underscore
+  #   sim_timeout: "100us"  # Simulation timeout
+
+  # SerDes Receiver (template - uncomment when ready)
+  # - name: serdes_rx
+  #   enabled: true
+  #   description: "SerDes receiver module"
+  #   top_module: serdes_rx_tb
+  #   testbench_file: serdes_rx_tb.sv
+  #   rtl_files:
+  #     - serdes_rx.sv
+  #     - deserializer.sv
+  #   verilator_extra_flags: []
+  #   sim_timeout: "100us"  # Simulation timeout
+
+  # Full SerDes Integration Test (template - uncomment when ready)
+  # - name: serdes_full
+  #   enabled: true
+  #   description: "Full SerDes TX-RX integration test"
+  #   top_module: serdes_full_tb
+  #   testbench_file: serdes_full_tb.sv
+  #   rtl_files:
+  #     - serdes_tx.sv
+  #     - serdes_rx.sv
+  #     - serializer.sv
+  #     - deserializer.sv
+  #     - serdes_common.sv
+  #   verilator_extra_flags:
+  #     - --trace-depth
+  #     - "2"
+  #   sim_timeout: "200us"  # Simulation timeout
