@@ -21,13 +21,47 @@ except ImportError:
 import re
 
 
+def extract_timescale(sv_file_path):
+    """
+    Parse timescale directive from SystemVerilog file.
+
+    Args:
+        sv_file_path: Path to SystemVerilog file
+
+    Returns:
+        tuple: (unit, precision) e.g., ('1ns', '1ps') or ('1ps', '1fs')
+               Returns (None, None) if no timescale found
+
+    Examples:
+        `timescale 1ns / 1ps  → ('1ns', '1ps')
+        `timescale 1ps/1fs    → ('1ps', '1fs')
+        `timescale 100fs/1fs  → ('100fs', '1fs')
+    """
+    try:
+        with open(sv_file_path, 'r', encoding='utf-8') as f:
+            for line in f:
+                # Match: `timescale <unit> / <precision>
+                # Supports whitespace variations and coefficients (e.g., 100fs)
+                match = re.match(r'`timescale\s+(\d+\.?\d*\s*\w+)\s*/\s*(\d+\.?\d*\s*\w+)', line.strip())
+                if match:
+                    unit = match.group(1).replace(' ', '')  # Remove any whitespace
+                    precision = match.group(2).replace(' ', '')
+                    return (unit, precision)
+    except FileNotFoundError:
+        print(f"Warning: File not found: {sv_file_path}")
+    except Exception as e:
+        print(f"Warning: Error reading {sv_file_path}: {e}")
+
+    return (None, None)
+
+
 def parse_timeout(timeout_str):
     """
     Parse timeout string with unit suffix and convert to seconds.
 
     Supported formats:
-        "50us"      -> 0.00005 seconds
         "10000ns"   -> 0.00001 seconds
+        "50us"      -> 0.00005 seconds
         "100ms"     -> 0.1 seconds
         "5s"        -> 5.0 seconds
         50000 (int) -> interpret as microseconds (backward compatibility)
@@ -60,8 +94,6 @@ def parse_timeout(timeout_str):
 
     # Convert to seconds
     conversions = {
-        'fs': 1e-15,
-        'ps': 1e-12,
         'ns': 1e-9,
         'us': 1e-6,
         'ms': 1e-3,
@@ -71,24 +103,25 @@ def parse_timeout(timeout_str):
     return value * conversions[unit]
 
 
-def parse_sim_timeout(timeout_str, timescale_unit='ns'):
+def parse_sim_timeout(timeout_str, timescale_unit_str='1ns'):
     """
-    Parse simulation timeout string and convert to numeric value for testbench.
+    Parse simulation timeout string and convert to numeric value in timescale units.
 
-    Assumes testbench timescale is 1ns/1ps by default.
+    This function is timescale-aware: it correctly converts the timeout duration
+    to the number of time units based on the testbench's actual timescale.
 
-    Supported formats:
-        "50us"      -> 50000 (50 microseconds = 50000 nanoseconds)
-        "10000ns"   -> 10000 (10000 nanoseconds)
-        "100ms"     -> 100000000 (100 milliseconds = 100000000 nanoseconds)
-        "5s"        -> 5000000000 (5 seconds = 5000000000 nanoseconds)
+    Examples:
+        parse_sim_timeout("50us", "1ns")   -> 50000      (50μs = 50000 × 1ns)
+        parse_sim_timeout("50us", "1ps")   -> 50000000   (50μs = 50000000 × 1ps)
+        parse_sim_timeout("100ns", "1ps")  -> 100000     (100ns = 100000 × 1ps)
+        parse_sim_timeout("1ms", "100fs")  -> 10000000000 (1ms = 10^10 × 100fs)
 
     Args:
-        timeout_str: String with unit suffix
-        timescale_unit: Base time unit of testbench (default: 'ns')
+        timeout_str: String with unit suffix (e.g., "50us", "10000ns", "1ms")
+        timescale_unit_str: Timescale unit from SystemVerilog (e.g., "1ns", "1ps", "100fs")
 
     Returns:
-        int: Timeout value in timescale units
+        int: Timeout value in timescale units (for use with -GSIM_TIMEOUT parameter)
 
     Raises:
         ValueError: If format is invalid
@@ -96,28 +129,51 @@ def parse_sim_timeout(timeout_str, timescale_unit='ns'):
     if not isinstance(timeout_str, str):
         raise ValueError(f"Invalid sim_timeout format: {timeout_str}")
 
-    # Extract number and unit
-    match = re.match(r'^(\d+\.?\d*)\s*(fs|ps|ns|us|ms|s)$', timeout_str.strip())
-    if not match:
-        raise ValueError(f"Invalid sim_timeout format: {timeout_str}. Expected format: '<number><unit>' (e.g., '50us', '10000ns')")
+    # Parse timeout string (e.g., "50us" -> value=50, unit="us")
+    timeout_match = re.match(r'^(\d+\.?\d*)\s*(fs|ps|ns|us|ms|s)$', timeout_str.strip())
+    if not timeout_match:
+        raise ValueError(
+            f"Invalid sim_timeout format: {timeout_str}. "
+            f"Expected format: '<number><unit>' (e.g., '50us', '10000ns')"
+        )
 
-    value = float(match.group(1))
-    unit = match.group(2)
+    timeout_value = float(timeout_match.group(1))
+    timeout_unit = timeout_match.group(2)
 
-    # Convert to nanoseconds (assuming timescale 1ns/1ps)
-    conversions_to_ns = {
-        'fs': 1e-6,
-        'ps': 1e-3,
-        'ns': 1.0,
-        'us': 1e3,
-        'ms': 1e6,
-        's': 1e9
+    # Parse timescale unit (e.g., "1ns" -> coefficient=1, unit="ns")
+    #                         "100fs" -> coefficient=100, unit="fs")
+    timescale_match = re.match(r'^(\d+\.?\d*)\s*(fs|ps|ns|us|ms|s)$', timescale_unit_str.strip())
+    if not timescale_match:
+        raise ValueError(
+            f"Invalid timescale format: {timescale_unit_str}. "
+            f"Expected format: '<number><unit>' (e.g., '1ns', '1ps', '100fs')"
+        )
+
+    timescale_coefficient = float(timescale_match.group(1))
+    timescale_unit = timescale_match.group(2)
+
+    # Conversion factors to seconds
+    time_to_seconds = {
+        'fs': 1e-15,
+        'ps': 1e-12,
+        'ns': 1e-9,
+        'us': 1e-6,
+        'ms': 1e-3,
+        's': 1.0
     }
 
-    ns_value = value * conversions_to_ns[unit]
+    # Convert timeout to seconds
+    timeout_seconds = timeout_value * time_to_seconds[timeout_unit]
 
-    # Return as integer (simulation time delay values must be integers)
-    return int(ns_value)
+    # Convert timescale unit to seconds (accounting for coefficient)
+    timescale_seconds_per_unit = timescale_coefficient * time_to_seconds[timescale_unit]
+
+    # Calculate number of timescale units needed for the timeout duration
+    result = timeout_seconds / timescale_seconds_per_unit
+
+    # Return as integer with proper rounding (not truncation)
+    # Use round() to handle floating-point precision issues (e.g., 49999.9999... → 50000)
+    return round(result)
 
 
 class TestConfig:
@@ -175,6 +231,74 @@ class TestRunner:
         self.vcd_file = self.waves_dir / f"{self.test_name}.vcd"
         self.executable = self.obj_dir / f"V{self.top_module}"
 
+    def get_effective_timescale(self):
+        """
+        Determine effective timescale for this test.
+
+        Strategy (Hybrid Approach):
+        1. If 'timescale' explicitly set in test config YAML, use that (override)
+        2. Otherwise, auto-detect from testbench file
+        3. Validate: warn if RTL files have different timescales
+
+        Returns:
+            tuple: (unit, precision) e.g., ('1ns', '1ps')
+                   Defaults to ('1ns', '1ps') if not found
+        """
+        # Check for explicit YAML override first
+        if 'timescale' in self.test_config:
+            yaml_timescale = self.test_config['timescale']
+            # YAML format is just the unit (e.g., "1ns"), add default precision
+            return (yaml_timescale, '1ps')  # Default precision
+
+        # Auto-detect from testbench file
+        tb_file = self.tb_dir / self.testbench_file
+        tb_timescale = extract_timescale(tb_file)
+
+        # If testbench has timescale, use it
+        if tb_timescale != (None, None):
+            return tb_timescale
+
+        # Fallback: check RTL files
+        for rtl_file in self.rtl_files:
+            rtl_path = self.rtl_dir / rtl_file
+            rtl_timescale = extract_timescale(rtl_path)
+            if rtl_timescale != (None, None):
+                print(f"   Warning: Using timescale from RTL file {rtl_file} (testbench has none)")
+                return rtl_timescale
+
+        # Ultimate fallback: default to 1ns/1ps (Verilator default)
+        print(f"   Warning: No timescale found, defaulting to 1ns/1ps")
+        return ('1ns', '1ps')
+
+    def validate_timescales(self):
+        """
+        Validate timescale consistency across all source files.
+        Prints warnings if mixed timescales detected.
+        """
+        timescales = []
+
+        # Check testbench
+        tb_file = self.tb_dir / self.testbench_file
+        tb_ts = extract_timescale(tb_file)
+        if tb_ts != (None, None):
+            timescales.append(('testbench', self.testbench_file, tb_ts[0]))
+
+        # Check RTL files
+        for rtl_file in self.rtl_files:
+            rtl_path = self.rtl_dir / rtl_file
+            rtl_ts = extract_timescale(rtl_path)
+            if rtl_ts != (None, None):
+                timescales.append(('RTL', rtl_file, rtl_ts[0]))
+
+        # Check for inconsistencies
+        if timescales:
+            unique_timescales = set(ts[2] for ts in timescales)
+            if len(unique_timescales) > 1:
+                print(f"   ⚠️  WARNING: Mixed timescales detected in test '{self.test_name}':")
+                for file_type, filename, ts in timescales:
+                    print(f"      {file_type:10s}: {filename:30s} → timescale {ts}")
+                print(f"      Using testbench timescale for simulation timeout calculation")
+
     def clean(self):
         """Clean simulation artifacts for this test"""
         print(f"🧹 Cleaning artifacts for test '{self.test_name}'...")
@@ -210,10 +334,18 @@ class TestRunner:
 
         # Add simulation timeout parameter if specified
         if 'sim_timeout' in self.test_config:
+            # Validate timescale consistency and show warnings
+            self.validate_timescales()
+
+            # Get effective timescale for this test
+            timescale_unit, timescale_precision = self.get_effective_timescale()
+
+            # Convert timeout string to numeric value in timescale units
             sim_timeout_str = self.test_config['sim_timeout']
-            sim_timeout_value = parse_sim_timeout(sim_timeout_str)
+            sim_timeout_value = parse_sim_timeout(sim_timeout_str, timescale_unit)
+
             cmd.append(f"-GSIM_TIMEOUT={sim_timeout_value}")
-            print(f"   Simulation timeout: {sim_timeout_str} ({sim_timeout_value} time units)")
+            print(f"   Simulation timeout: {sim_timeout_str} → {sim_timeout_value} time units (timescale: {timescale_unit}/{timescale_precision})")
 
         # Add RTL files explicitly (supports subdirectory paths like tx/tx_ffe.sv)
         for rtl_file in self.rtl_files:

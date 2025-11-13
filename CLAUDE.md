@@ -118,10 +118,10 @@ python3 scripts/run_test.py --all
 **4-step process** (all required):
 
 1. Create RTL module in `rtl/{module}.sv`
-   - Include `timescale 1ns / 1ps` at the top
+   - Include appropriate `timescale directive (see Timescale Guidelines below)
 
 2. Create testbench in `tb/{module}_tb.sv`
-   - Include `timescale 1ns / 1ps` at the top
+   - Include appropriate `timescale directive (see Timescale Guidelines below)
    - Declare with timeout parameter: `module {module}_tb #(parameter SIM_TIMEOUT = default_value);`
    - Must include `$dumpfile("sim/waves/{test_name}.vcd")`
    - Must include self-checking logic with pass/fail output
@@ -146,7 +146,14 @@ python3 scripts/run_test.py --all
        - common.sv                    # Can mix root and subdirectory paths
      verilator_extra_flags: []        # Optional: add flags like --trace-underscore
      sim_timeout: "50us"              # Simulation time timeout (passed via -GSIM_TIMEOUT)
+     timescale: "1ns"                 # Optional: override auto-detected timescale (e.g., "1ps" for high-speed)
    ```
+
+   **Timescale Handling** (Auto-Detection with Optional Override):
+   - Framework **automatically detects** timescale from testbench file
+   - Correctly converts `sim_timeout` to appropriate time units
+   - Optional `timescale` field overrides auto-detection if needed
+   - Validates consistency and warns if mixed timescales detected
 
    **Subdirectory Example** (for SerDes modules in `rtl/tx/`, `rtl/rx/`):
    ```yaml
@@ -217,7 +224,19 @@ endmodule
 
 ## SystemVerilog Style Notes
 
-- **Timescale**: Always include `timescale 1ns / 1ps` at the top of all `.sv` files
+- **Timescale**: **ALWAYS include** `timescale directive at the top of all `.sv` files
+  - **Timescale Guidelines by Design Domain**:
+    - **Low-speed modules** (<1 GHz, general digital logic): `timescale 1ns / 1ps`
+      - Examples: counters, state machines, control logic
+      - Time unit: 1 nanosecond, precision: 1 picosecond
+    - **High-speed SerDes** (10-25 Gbps, critical timing): `timescale 1ps / 1fs`
+      - Examples: FFE, DFE, CTLE, CDR, serializer/deserializer
+      - Time unit: 1 picosecond, precision: 1 femtosecond
+      - Required for accurate modeling of 40-100ps clock periods
+    - **Ultra-high-speed** (>25 Gbps, sub-picosecond resolution): `timescale 100fs / 1fs`
+      - Use only when picosecond resolution is insufficient
+  - **Critical**: Framework automatically detects timescale and converts timeouts correctly
+  - **Mixed timescales**: If unavoidable, testbench timescale determines simulation behavior
 - **Reset**: Use active-low synchronous reset (`rst_n`)
 - **Clocking**: Sequential logic in `always_ff @(posedge clk)`
 - **Combinational**: Use `always_comb` or `assign` (not `always @*`)

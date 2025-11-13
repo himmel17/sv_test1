@@ -1,5 +1,26 @@
 # SystemVerilog Test Configuration
 # This file defines all testbenches for the project
+#
+# =============================================================================
+# Timescale Handling (Automatic Detection with Optional Override)
+# =============================================================================
+# The framework automatically detects timescale from testbench files and
+# correctly converts sim_timeout to appropriate time units.
+#
+# Key Features:
+# - Auto-detection: Reads `timescale directive from testbench .sv file
+# - Correct conversion: "50us" timeout converted to proper time units based on timescale
+#   Example: With `timescale 1ns/1ps: "50us" → 50000 time units
+#   Example: With `timescale 1ps/1fs: "50us" → 50000000 time units
+# - Validation: Warns if RTL files have different timescales than testbench
+# - Optional override: Use 'timescale' field in test config to override auto-detection
+#
+# Timescale Guidelines by Design Domain:
+# - Low-speed (<1 GHz):    Use `timescale 1ns/1ps   (e.g., counters, control logic)
+# - High-speed (10-25 Gbps): Use `timescale 1ps/1fs   (e.g., SerDes FFE/DFE/CTLE)
+# - Ultra-high (>25 Gbps):   Use `timescale 100fs/1fs (rarely needed)
+#
+# =============================================================================
 
 project:
   rtl_dir: rtl
@@ -51,7 +72,8 @@ tests:
   #     - serializer.sv
   #   verilator_extra_flags:
   #     - --trace-underscore
-  #   sim_timeout: "100us"  # Simulation timeout
+  #   sim_timeout: "100us"  # Simulation timeout (auto-detects timescale from testbench)
+  #   timescale: "1ps"      # OPTIONAL: Override auto-detected timescale (use for high-speed SerDes)
 
   # SerDes Receiver (template - uncomment when ready)
   # - name: serdes_rx
