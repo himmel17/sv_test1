@@ -7,27 +7,46 @@ SystemVerilog テストベンチランナーの完全解説
 1. [概要](#概要)
 2. [基本的な使い方](#基本的な使い方)
 3. [アーキテクチャ](#アーキテクチャ)
-4. [主要なクラスと機能](#主要なクラスと機能)
-5. [タイムアウト設定](#タイムアウト設定)
-6. [**NEW** タイムスケール対応](#タイムスケール対応)
-7. [コマンドライン引数](#コマンドライン引数)
-8. [テストフロー](#テストフロー)
-9. [トラブルシューティング](#トラブルシューティング)
+4. [⭐ NEW: simulators.py - シミュレータ抽象化レイヤー](#-new-simulatorspy---シミュレータ抽象化レイヤー)
+5. [主要なクラスと機能（run_test.py）](#主要なクラスと機能runtest.py)
+6. [タイムアウト設定](#タイムアウト設定)
+7. [タイムスケール対応](#タイムスケール対応)
+8. [コマンドライン引数](#コマンドライン引数)
+9. [テストフロー](#テストフロー)
+10. [トラブルシューティング](#トラブルシューティング)
+11. [まとめ](#まとめ)
+12. [参考情報](#参考情報)
 
 ---
 
 ## 1. 概要
 
-`run_test.py` は、SystemVerilog テストベンチを Verilator でコンパイル・実行し、GTKWave で波形を表示するための Python スクリプトです。
+`run_test.py` は、SystemVerilog テストベンチを**複数のシミュレータ**（Verilator または Synopsys VCS）でコンパイル・実行し、GTKWave で波形を表示するための Python スクリプトです。
 
 ### 1.1. 主な特徴
 
-- **YAML ベース設定**: `tests/test_config.yaml` で複数のテストを管理
+- **⭐ NEW: マルチシミュレータ対応**: Verilator（オープンソース）と Synopsys VCS（商用）に対応
+- **柔軟なシミュレータ選択**: コマンドライン、YAML 設定、テストごとの指定が可能
+- **YAML ベース設定**: `tests/test_config.yaml` で複数のテストとシミュレータ設定を管理
+- **抽象化レイヤー**: シミュレータ固有のロジックを分離し、拡張が容易
 - **自動化されたフロー**: コンパイル → シミュレーション → 波形生成を一括実行
 - **柔軟なタイムアウト制御**: シミュレーション時間と実行時間の両方を設定可能
 - **サブディレクトリ対応**: RTL ファイルとテストベンチを階層的に管理
 
-### 1.2. 依存関係
+### 1.2. 対応シミュレータ
+
+| シミュレータ | 種別 | 特徴 |
+|------------|------|------|
+| **Verilator** | オープンソース | 高速、無料、デフォルト設定 |
+| **Synopsys VCS** | 商用 | 業界標準、高性能、ライセンス必要 |
+
+**シミュレータ選択の優先順位**:
+1. コマンドライン: `--simulator verilator|vcs`
+2. テストごとの設定: YAML の `simulator: vcs`
+3. グローバルデフォルト: YAML の `default_simulator: verilator`
+4. フォールバック: `verilator`
+
+### 1.3. 依存関係
 
 ```python
 import os
@@ -42,9 +61,18 @@ try:
 except ImportError:
     print("Error: PyYAML is required. Install with: pip3 install pyyaml")
     sys.exit(1)
+
+import re
+
+# ⭐ NEW: シミュレータ抽象化レイヤー
+from simulators import SimulatorFactory
 ```
 
-PyYAML ライブラリが必須です。インストールされていない場合はエラーメッセージを表示して終了します。
+**必須ライブラリ**:
+- **PyYAML**: YAML 設定ファイルの解析
+- **simulators.py**: シミュレータ抽象化レイヤー（新規追加）
+
+PyYAML がインストールされていない場合はエラーメッセージを表示して終了します。
 
 ---
 
@@ -88,39 +116,644 @@ python3 scripts/run_test.py --test counter --view
 python3 scripts/run_test.py --clean --test counter
 ```
 
+### 2.6. ⭐ NEW: シミュレータ指定
+
+```bash
+# Verilator を使用（デフォルト）
+python3 scripts/run_test.py --test counter
+
+# VCS を使用
+python3 scripts/run_test.py --test counter --simulator vcs
+
+# すべてのテストを VCS で実行
+python3 scripts/run_test.py --all --simulator vcs
+```
+
+**出力例**（シミュレータ表示）:
+```
+======================================================================
+  Test: counter
+  Description: 8-bit synchronous counter with overflow detection
+  Simulator: vcs  ← 使用中のシミュレータが表示される
+======================================================================
+```
+
 ---
 
 ## 3. アーキテクチャ
 
-スクリプトは以下の 3 つの主要コンポーネントで構成されています：
+### 3.1. ⭐ NEW: マルチシミュレータアーキテクチャ
+
+スクリプトは**4 つの主要コンポーネント**で構成されています：
 
 ```
-┌─────────────────────────────────────────┐
-│  tests/test_config.yaml                 │
-│  (テスト定義とパラメータ)                │
-└───────────────┬─────────────────────────┘
-                │
-                v
-┌─────────────────────────────────────────┐
-│  TestConfig クラス                       │
-│  - YAML の読み込みと解析                 │
-│  - 有効なテストのフィルタリング           │
-└───────────────┬─────────────────────────┘
-                │
-                v
-┌─────────────────────────────────────────┐
-│  TestRunner クラス                       │
-│  - Verilator コンパイル                  │
-│  - シミュレーション実行                  │
-│  - GTKWave 起動                         │
-└─────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────┐
+│  tests/test_config.yaml                                  │
+│  - project.default_simulator: verilator/vcs              │
+│  - simulators.verilator: {common_flags, ...}             │
+│  - simulators.vcs: {common_flags, ...}                   │
+│  - tests[].simulator: vcs (テストごとのオーバーライド)    │
+└───────────────────────┬──────────────────────────────────┘
+                        │
+                        v
+┌──────────────────────────────────────────────────────────┐
+│  TestConfig クラス                                        │
+│  - YAML の読み込みと解析                                  │
+│  - simulators セクションの読み込み (⭐ NEW)              │
+│  - 有効なテストのフィルタリング                           │
+└───────────────────────┬──────────────────────────────────┘
+                        │
+                        v
+┌──────────────────────────────────────────────────────────┐
+│  TestRunner クラス (⭐ 大幅変更)                         │
+│  - シミュレータタイプの決定                               │
+│    (CLI > test config > project default > fallback)      │
+│  - SimulatorFactory の呼び出し                            │
+│  - シミュレータインスタンスへの処理委譲                   │
+└───────────────────────┬──────────────────────────────────┘
+                        │
+                        v
+┌──────────────────────────────────────────────────────────┐
+│  SimulatorFactory (⭐ NEW)                               │
+│  - シミュレータタイプに基づいて適切なインスタンスを生成   │
+│  - Factory パターンによる抽象化                          │
+└───────────────────────┬──────────────────────────────────┘
+                        │
+            ┌───────────┴───────────┐
+            v                       v
+┌─────────────────────┐   ┌─────────────────────┐
+│ VerilatorSimulator  │   │ VCSSimulator        │
+│ (⭐ NEW)            │   │ (⭐ NEW)            │
+│ - compile()         │   │ - compile()         │
+│ - run_simulation()  │   │ - run_simulation()  │
+│ - clean()           │   │ - clean()           │
+│ - get_work_dir()    │   │ - get_work_dir()    │
+│ - executable:       │   │ - executable:       │
+│   V{module}         │   │   simv              │
+└─────────────────────┘   └─────────────────────┘
 ```
+
+**主な変更点**:
+- ✅ `simulators.py` モジュールの追加（シミュレータ抽象化レイヤー）
+- ✅ `TestRunner` からシミュレータ固有のロジックを分離
+- ✅ Factory パターンによる柔軟なシミュレータ選択
+- ✅ YAML 設定に `simulators` セクションを追加
+
+### 3.2. データフロー
+
+```
+ユーザーコマンド
+    │
+    ├─ --simulator vcs (CLI オプション)
+    │
+    v
+TestRunner.__init__()
+    │
+    ├─ シミュレータタイプ決定
+    │   Priority: CLI > test config > project default > fallback
+    │
+    v
+SimulatorFactory.create_simulator(type)
+    │
+    ├─ type='verilator' → VerilatorSimulator
+    ├─ type='vcs'       → VCSSimulator
+    │
+    v
+シミュレータインスタンス
+    │
+    ├─ compile(): verilator ... または vcs ...
+    ├─ run_simulation(): ./V{module} または ./simv
+    └─ clean(): obj_dir/ または vcs/ の削除
+```
+
+### 3.3. 実行例：完全なテストフロー
+
+実際のコマンド実行時に、各コンポーネントがどのように連携するかを示します。
+
+**実行コマンド**: `python3 run_test.py --test counter --view`
+
+```
+1. main() 開始
+   ├─ 引数解析: test_name="counter", view=True, simulator=None
+   ├─ YAML ロード: tests/test_config.yaml
+   └─ "counter" テストの設定を取得
+
+2. TestRunner インスタンス生成
+   ├─ シミュレータタイプ決定:
+   │  ├─ CLI: None (指定なし)
+   │  ├─ テスト設定: None ('counter' には 'simulator' フィールドなし)
+   │  ├─ グローバル設定: 'verilator'
+   │  └─ → 'verilator' を使用
+   │
+   ├─ シミュレータ設定取得:
+   │  └─ simulators.verilator から {common_flags: [...], execution_timeout: "30s"}
+   │
+   ├─ SimulatorFactory.create_simulator('verilator', ...) 呼び出し
+   │  ├─ マッピング検索: 'verilator' → VerilatorSimulator クラス
+   │  ├─ インスタンス化: VerilatorSimulator(project_root, ...)
+   │  └─ return: VerilatorSimulator インスタンスを返す
+   │
+   └─ self.simulator = VerilatorSimulator インスタンス（保存）
+
+3. TestRunner.run(view=True) 実行
+   │
+   ├─ [コンパイル]
+   │  ├─ 出力: "🔨 Compiling test 'counter' with Verilator..."
+   │  ├─ self.simulator.compile() 呼び出し
+   │  │  └─ コマンド生成:
+   │  │     verilator --binary --timing --trace -Wall \
+   │  │       -Mdir sim/obj_dir --top-module counter_tb \
+   │  │       -y rtl/ -GSIM_TIMEOUT=50000 \
+   │  │       rtl/counter.sv tb/counter_tb.sv
+   │  └─ 成果物: sim/obj_dir/Vcounter_tb (実行ファイル)
+   │
+   ├─ [シミュレーション]
+   │  ├─ 出力: "🚀 Running simulation for 'counter'..."
+   │  ├─ self.simulator.run_simulation() 呼び出し
+   │  │  ├─ 実行可能ファイルチェック: sim/obj_dir/Vcounter_tb ✓
+   │  │  ├─ waves ディレクトリ作成: mkdir -p sim/waves
+   │  │  ├─ 実行: subprocess.run([sim/obj_dir/Vcounter_tb], timeout=30.0)
+   │  │  ├─ テストベンチ動作:
+   │  │  │  ├─ パラメータ: SIM_TIMEOUT=50000
+   │  │  │  ├─ セルフチェックロジック実行
+   │  │  │  ├─ VCD 出力: $dumpfile("sim/waves/counter.vcd")
+   │  │  │  └─ 終了: $finish
+   │  │  └─ 出力確認: sim/waves/counter.vcd ✓
+   │  └─ 結果: True（成功）
+   │
+   └─ [波形表示]
+      ├─ view=True かつ VCD 存在 ✓
+      ├─ GTKWave 起動: subprocess.Popen(["gtkwave", "sim/waves/counter.vcd"])
+      └─ バックグラウンドで実行
+
+4. 結果サマリー出力
+   ├─ === TEST SUMMARY ===
+   ├─ counter           ✓ PASSED
+   └─ Total: 1 | Passed: 1 | Failed: 0
+```
+
+**このフローから理解できること**:
+- **シミュレータ選択**: 4段階の優先順位ロジックで決定（CLI → テスト設定 → グローバル設定 → フォールバック）
+- **Factory パターン**: `SimulatorFactory` が適切なシミュレータインスタンスを動的に生成
+- **抽象化の利点**: `TestRunner` はシミュレータ固有の詳細を知らず、`BaseSimulator` インターフェースのみに依存
+- **ライフサイクル**: 構築（Factory生成） → コンパイル → シミュレーション → 波形表示の流れ
+
+各コンポーネントの詳細については、[4. simulators.py - シミュレータ抽象化レイヤー](#4--new-simulatorspy---シミュレータ抽象化レイヤー) を参照してください。
 
 ---
 
-## 4. 主要なクラスと機能
+## 4. ⭐ NEW: simulators.py - シミュレータ抽象化レイヤー
 
-### 4.1. TestConfig クラス
+`scripts/simulators.py` は、異なるシミュレータ（Verilator, VCS）を統一的に扱うための抽象化レイヤーです。
+
+### 4.1. BaseSimulator 抽象基底クラス
+
+すべてのシミュレータが実装すべきインターフェースを定義します。
+
+```python
+from abc import ABC, abstractmethod
+from pathlib import Path
+
+class BaseSimulator(ABC):
+    """シミュレータの抽象基底クラス"""
+
+    def __init__(self, project_root, project_config, sim_config, test_config):
+        """
+        Args:
+            project_root: プロジェクトルートパス
+            project_config: プロジェクト設定（YAML の project セクション + simulators）
+            sim_config: シミュレータ固有設定（YAML の simulators.verilator など）
+            test_config: テスト設定（YAML の tests[] 要素）
+        """
+        self.project_root = Path(project_root)
+        self.project_config = project_config
+        self.sim_config = sim_config
+        self.test_config = test_config
+
+        # 共通パス
+        self.rtl_dir = self.project_root / project_config.get('rtl_dir', 'rtl')
+        self.tb_dir = self.project_root / project_config.get('tb_dir', 'tb')
+        self.waves_dir = self.project_root / project_config.get('waves_dir', 'sim/waves')
+
+        # テスト属性
+        self.test_name = test_config['name']
+        self.top_module = test_config['top_module']
+        self.testbench_file = test_config['testbench_file']
+        self.rtl_files = test_config.get('rtl_files', [])
+        self.vcd_file = self.waves_dir / f"{self.test_name}.vcd"
+
+    @abstractmethod
+    def get_work_dir(self) -> Path:
+        """シミュレータ固有の作業ディレクトリを返す"""
+        pass
+
+    @abstractmethod
+    def get_executable_path(self) -> Path:
+        """コンパイル済み実行ファイルのパスを返す"""
+        pass
+
+    @abstractmethod
+    def compile(self) -> bool:
+        """設計をコンパイルする (成功時 True)"""
+        pass
+
+    @abstractmethod
+    def run_simulation(self) -> bool:
+        """シミュレーションを実行する (成功時 True)"""
+        pass
+
+    @abstractmethod
+    def clean(self):
+        """シミュレータ固有の成果物をクリーンアップ"""
+        pass
+```
+
+**共通機能**:
+- `get_effective_timescale()`: テストベンチからタイムスケールを自動検出
+- `validate_timescales()`: RTL とテストベンチのタイムスケール整合性検証
+
+### 4.2. VerilatorSimulator クラス
+
+Verilator 固有の実装です。
+
+```python
+class VerilatorSimulator(BaseSimulator):
+    """Verilator シミュレータ実装"""
+
+    def get_work_dir(self) -> Path:
+        return self.project_root / self.project_config.get('obj_dir', 'sim/obj_dir')
+
+    def get_executable_path(self) -> Path:
+        # Verilator は "V{module}" という命名規則
+        return self.get_work_dir() / f"V{self.top_module}"
+
+    def compile(self) -> bool:
+        """Verilator でコンパイル"""
+        cmd = ["verilator"]
+
+        # 共通フラグ (YAML から)
+        cmd.extend(self.sim_config.get('common_flags', []))
+        # 例: --binary, --timing, -Wall, --trace, -Wno-TIMESCALEMOD
+
+        # テスト固有フラグ
+        cmd.extend(self.test_config.get('verilator_extra_flags', []))
+
+        # 出力ディレクトリ
+        cmd.extend(["-Mdir", str(self.get_work_dir())])
+
+        # トップモジュール
+        cmd.extend(["--top-module", self.top_module])
+
+        # RTL 検索パス
+        cmd.extend(["-y", str(self.rtl_dir)])
+
+        # シミュレーションタイムアウトパラメータ
+        if 'sim_timeout' in self.test_config:
+            timescale_unit, _ = self.get_effective_timescale()
+            sim_timeout_value = parse_sim_timeout(
+                self.test_config['sim_timeout'],
+                timescale_unit
+            )
+            cmd.append(f"-GSIM_TIMEOUT={sim_timeout_value}")
+
+        # RTL ファイル
+        for rtl_file in self.rtl_files:
+            cmd.append(str(self.rtl_dir / rtl_file))
+
+        # テストベンチ
+        cmd.append(str(self.tb_dir / self.testbench_file))
+
+        # 実行
+        result = subprocess.run(cmd, cwd=self.project_root, ...)
+        return result.returncode == 0
+
+    def run_simulation(self) -> bool:
+        """Verilator 実行ファイルを実行"""
+        executable = self.get_executable_path()  # V{module}
+        timeout = parse_timeout(self.sim_config.get('execution_timeout', '30s'))
+
+        result = subprocess.run(
+            [str(executable)],
+            cwd=self.project_root,
+            timeout=timeout,
+            ...
+        )
+        return result.returncode == 0
+
+    def clean(self):
+        """obj_dir/ と VCD ファイルを削除"""
+        if self.get_work_dir().exists():
+            shutil.rmtree(self.get_work_dir())
+        if self.vcd_file.exists():
+            self.vcd_file.unlink()
+```
+
+### 4.3. VCSSimulator クラス
+
+Synopsys VCS 固有の実装です。
+
+```python
+class VCSSimulator(BaseSimulator):
+    """Synopsys VCS シミュレータ実装"""
+
+    def get_work_dir(self) -> Path:
+        return self.project_root / self.project_config.get('vcs_dir', 'sim/vcs')
+
+    def get_executable_path(self) -> Path:
+        # VCS は常に "simv" という名前
+        return self.get_work_dir() / "simv"
+
+    def compile(self) -> bool:
+        """VCS でコンパイル"""
+        cmd = ["vcs"]
+
+        # 共通フラグ (YAML から)
+        cmd.extend(self.sim_config.get('common_flags', []))
+        # 例: -sverilog, -timescale=1ns/1ps, -debug_access+all, +vcs+lic+wait, -full64
+
+        # テスト固有フラグ
+        cmd.extend(self.test_config.get('vcs_extra_flags', []))
+
+        # 出力実行ファイル
+        cmd.extend(["-o", str(self.get_executable_path())])
+
+        # シミュレーションタイムアウトパラメータ
+        if 'sim_timeout' in self.test_config:
+            timescale_unit, _ = self.get_effective_timescale()
+            sim_timeout_value = parse_sim_timeout(
+                self.test_config['sim_timeout'],
+                timescale_unit
+            )
+            # VCS は +define+ でパラメータを渡す
+            cmd.append(f"+define+SIM_TIMEOUT={sim_timeout_value}")
+
+        # RTL ファイル
+        for rtl_file in self.rtl_files:
+            cmd.append(str(self.rtl_dir / rtl_file))
+
+        # テストベンチ
+        cmd.append(str(self.tb_dir / self.testbench_file))
+
+        # 実行
+        result = subprocess.run(cmd, cwd=self.project_root, ...)
+        return result.returncode == 0
+
+    def run_simulation(self) -> bool:
+        """VCS 実行ファイル (simv) を実行"""
+        executable = self.get_executable_path()  # simv
+        timeout = parse_timeout(self.sim_config.get('execution_timeout', '30s'))
+
+        result = subprocess.run(
+            [str(executable)],
+            cwd=self.project_root,
+            timeout=timeout,
+            ...
+        )
+        return result.returncode == 0
+
+    def clean(self):
+        """vcs/, csrc/, simv.daidir/, ucli.key, VCD ファイルを削除"""
+        if self.get_work_dir().exists():
+            shutil.rmtree(self.get_work_dir())
+
+        # VCS は追加の成果物を生成
+        for artifact in ['csrc', 'simv.daidir', 'ucli.key']:
+            path = self.project_root / artifact
+            if path.exists():
+                if path.is_dir():
+                    shutil.rmtree(path)
+                else:
+                    path.unlink()
+
+        if self.vcd_file.exists():
+            self.vcd_file.unlink()
+```
+
+### 4.4. SimulatorFactory クラス
+
+Factory パターンで適切なシミュレータインスタンスを生成します。
+
+```python
+class SimulatorFactory:
+    """シミュレータインスタンスを生成するファクトリ"""
+
+    @staticmethod
+    def create_simulator(
+        simulator_type: str,
+        project_root,
+        project_config,
+        sim_config,
+        test_config
+    ) -> BaseSimulator:
+        """
+        Args:
+            simulator_type: 'verilator' または 'vcs'
+            ...
+
+        Returns:
+            適切なシミュレータインスタンス
+
+        Raises:
+            ValueError: 未知のシミュレータタイプ
+        """
+        simulators = {
+            'verilator': VerilatorSimulator,
+            'vcs': VCSSimulator
+        }
+
+        if simulator_type not in simulators:
+            raise ValueError(
+                f"Unknown simulator: {simulator_type}. "
+                f"Available: {', '.join(simulators.keys())}"
+            )
+
+        return simulators[simulator_type](
+            project_root, project_config, sim_config, test_config
+        )
+```
+
+**使用例**:
+```python
+# TestRunner.__init__() 内で使用
+simulator = SimulatorFactory.create_simulator(
+    'vcs',  # または 'verilator'
+    project_root,
+    project_config,
+    sim_config,
+    test_config
+)
+
+# シミュレータインスタンスを使用
+simulator.compile()
+simulator.run_simulation()
+simulator.clean()
+```
+
+#### 4.4.1. 役割とインスタンス生成フロー
+
+**SimulatorFactory の目的**
+
+`SimulatorFactory` は、テストフレームワークの中核を担うコンポーネントで、**シミュレータタイプ（`'verilator'` または `'vcs'`）に応じて適切なシミュレータインスタンスを動的に生成**します。この Factory パターンにより、以下の利点が得られます：
+
+- **抽象化**: `TestRunner` はシミュレータ固有の実装詳細を知る必要がなく、`BaseSimulator` インターフェースのみに依存
+- **拡張性**: 新しいシミュレータ（例：Icarus Verilog）を追加する場合、`BaseSimulator` を継承した新クラスと Factory のマッピング更新のみで対応可能
+- **一元管理**: シミュレータインスタンスの生成ロジックが一箇所に集約され、保守性が向上
+
+**シミュレータタイプの決定プロセス**
+
+実際のシミュレータタイプは、以下の**4段階の優先順位**で決定されます（`TestRunner.__init__()` 内で実装）：
+
+1. **コマンドライン引数** (最優先)
+   ```bash
+   python3 run_test.py --test counter --simulator vcs
+   # → 強制的に VCS を使用
+   ```
+
+2. **テストごとの設定** (YAML の `simulator` フィールド)
+   ```yaml
+   tests:
+     - name: high_speed_serdes
+       simulator: vcs  # このテストのみ VCS を使用
+   ```
+
+3. **グローバルデフォルト** (YAML の `default_simulator`)
+   ```yaml
+   project:
+     default_simulator: verilator  # 全テストのデフォルト
+   ```
+
+4. **ハードコードされたフォールバック**
+   ```python
+   simulator_type = simulator_type or 'verilator'  # 最終的なデフォルト
+   ```
+
+**実装コード（TestRunner.__init__() からの抜粋）**:
+```python
+# run_test.py の TestRunner.__init__() 内
+if simulator_type is None:  # コマンドラインで指定されていない場合
+    # テスト設定 → プロジェクトデフォルト → 'verilator' の順で決定
+    simulator_type = test_config.get('simulator') or \
+                   project_config.get('default_simulator', 'verilator')
+```
+
+**インスタンス生成から使用までの流れ**
+
+`SimulatorFactory.create_simulator()` が呼ばれると、以下のステップが実行されます：
+
+1. **マッピングによるクラス解決**
+   ```python
+   simulators = {
+       'verilator': VerilatorSimulator,  # 文字列 → クラスへのマッピング
+       'vcs': VCSSimulator
+   }
+   ```
+
+2. **シミュレータタイプの検証**
+   - 未知のタイプ（例：`'modelsim'`）の場合は `ValueError` を発生
+   - 利用可能なシミュレータリストをエラーメッセージに含める
+
+3. **インスタンス化とreturn**
+   ```python
+   return simulators[simulator_type](
+       project_root, project_config, sim_config, test_config
+   )
+   # → VerilatorSimulator または VCSSimulator のインスタンスを返す
+   # → 返却型は BaseSimulator（ポリモーフィズム）
+   ```
+
+4. **TestRunner でのインスタンス保存**
+   ```python
+   self.simulator = SimulatorFactory.create_simulator(...)
+   # → self.simulator は BaseSimulator 型として扱われる
+   ```
+
+5. **ライフサイクル全体**
+   ```
+   [構築フェーズ] TestRunner.__init__()
+     ↓
+   SimulatorFactory.create_simulator() → VerilatorSimulator インスタンス
+     ↓
+   [実行フェーズ] TestRunner.run()
+     ↓
+   ├─ self.simulator.compile()          # Verilator でコンパイル
+   ├─ self.simulator.run_simulation()   # Verilator で実行
+   └─ GTKWave 起動（オプション）
+     ↓
+   [クリーンアップフェーズ] TestRunner.clean()
+     ↓
+   self.simulator.clean()               # sim/obj_dir/ と VCD を削除
+   ```
+
+**SimulatorFactory の動作例**
+
+`TestRunner` 内での実際の使用方法：
+
+```python
+# TestRunner.__init__() 内でのシミュレータインスタンス生成
+class TestRunner:
+    def __init__(self, project_root, project_config, test_config, simulator_type=None):
+        # シミュレータタイプ決定（4段階の優先順位）
+        if simulator_type is None:
+            simulator_type = test_config.get('simulator') or \
+                           project_config.get('default_simulator', 'verilator')
+
+        # SimulatorFactory を使用してインスタンス生成
+        self.simulator = SimulatorFactory.create_simulator(
+            simulator_type,      # 'verilator' または 'vcs'
+            project_root,
+            project_config,
+            sim_config,
+            test_config
+        )
+        # → self.simulator は BaseSimulator 型として扱われる
+        #    実際には VerilatorSimulator または VCSSimulator インスタンス
+```
+
+**インスタンス生成の内部動作**:
+
+1. **Factory 呼び出し**: `SimulatorFactory.create_simulator('verilator', ...)`
+2. **マッピング検索**: 辞書 `simulators` から `'verilator'` → `VerilatorSimulator` クラスを取得
+3. **インスタンス化**: `VerilatorSimulator(project_root, project_config, sim_config, test_config)`
+4. **返却**: `BaseSimulator` 型として返される（ポリモーフィズム）
+5. **保存**: `TestRunner` が `self.simulator` に保存し、以降のメソッドで使用
+
+**使用時の抽象化の利点**:
+
+```python
+# TestRunner.run() 内
+def run(self, view=False):
+    # シミュレータの種類を意識せずに使用可能
+    if not self.simulator.compile():     # VerilatorSimulator.compile() または VCSSimulator.compile()
+        return False
+
+    if not self.simulator.run_simulation():  # 同様に適切なメソッドが呼ばれる
+        return False
+
+    # TestRunner はシミュレータ固有のコマンドやパスを知らない
+    # すべて BaseSimulator インターフェースを通じて実行
+```
+
+このように、**SimulatorFactory は単にインスタンスを生成するだけでなく、シミュレータ選択ロジックとテストフレームワーク全体を結びつける中心的な役割**を果たしています。
+
+完全な実行フローについては、[3.3. 実行例：完全なテストフロー](#33-実行例完全なテストフロー) を参照してください。
+
+### 4.5. Verilator vs VCS の違い
+
+| 項目 | Verilator | VCS |
+|------|-----------|-----|
+| **実行ファイル名** | `V{top_module}` | `simv` |
+| **コンパイルコマンド** | `verilator` | `vcs` |
+| **パラメータ渡し** | `-GSIM_TIMEOUT=50000` | `+define+SIM_TIMEOUT=50000` |
+| **主要フラグ** | `--binary`, `--timing`, `--trace` | `-sverilog`, `-debug_access+all`, `-full64` |
+| **作業ディレクトリ** | `sim/obj_dir/` | `sim/vcs/` |
+| **追加成果物** | なし | `csrc/`, `simv.daidir/`, `ucli.key` |
+| **VCD ダンプ** | `--trace` フラグ | `-debug_access+all` フラグ |
+
+---
+
+## 5. 主要なクラスと機能（run_test.py）
+
+### 5.1. TestConfig クラス
 
 YAML 設定ファイルを管理するクラスです。
 
@@ -246,37 +879,73 @@ class Path:
 
 このため、`project_root / args.config` は実際には `project_root.__truediv__(args.config)` というメソッド呼び出しと同じです。
 
-### 4.3. TestRunner クラス
+### 5.2. ⭐ 大幅変更: TestRunner クラス
 
-個々のテストを実行するクラスです。
+個々のテストを実行するクラスです。**シミュレータ抽象化レイヤーを使用するように大幅変更**されました。
 
 ```python
 class TestRunner:
-    """Runs individual test cases"""
+    """Runs individual test cases using simulator abstraction"""
 
-    def __init__(self, project_root, project_config, verilator_config, test_config):
+    def __init__(self, project_root, project_config, test_config, simulator_type=None):
         self.project_root = Path(project_root)
         self.project_config = project_config
-        self.verilator_config = verilator_config
         self.test_config = test_config
 
-        # Setup paths
-        self.rtl_dir = self.project_root / project_config.get('rtl_dir', 'rtl')
-        self.tb_dir = self.project_root / project_config.get('tb_dir', 'tb')
-        self.sim_dir = self.project_root / project_config.get('sim_dir', 'sim')
-        self.obj_dir = self.project_root / project_config.get('obj_dir', 'sim/obj_dir')
-        self.waves_dir = self.project_root / project_config.get('waves_dir', 'sim/waves')
+        # ⭐ NEW: シミュレータタイプの決定
+        # 優先順位: CLI override > test config > project default > 'verilator'
+        if simulator_type is None:
+            simulator_type = test_config.get('simulator') or \
+                           project_config.get('default_simulator', 'verilator')
+
+        self.simulator_type = simulator_type
+
+        # ⭐ NEW: シミュレータ固有設定の取得
+        simulators_config = project_config.get('simulators', {})
+        if simulator_type in simulators_config:
+            sim_config = simulators_config[simulator_type]
+        else:
+            # 後方互換性: simulators セクションがない場合
+            if simulator_type == 'verilator' and 'verilator' in project_config:
+                sim_config = project_config['verilator']
+            else:
+                sim_config = {}
+
+        # ⭐ NEW: SimulatorFactory でインスタンス生成
+        self.simulator = SimulatorFactory.create_simulator(
+            simulator_type,
+            project_root,
+            project_config,
+            sim_config,
+            test_config
+        )
+
+        # テスト属性（レポート用）
+        self.test_name = test_config['name']
+        self.vcd_file = self.simulator.vcd_file
 ```
 
-**主なメソッド**:
+**主な変更点**:
 
-- `clean()`: シミュレーション成果物をクリーンアップ
-- `verilate()`: Verilator でコンパイル
-- `run_simulation()`: シミュレーション実行
-- `view_waveform()`: GTKWave 起動
-- `run()`: 完全なテストフローを実行
-- **⭐ NEW** `get_effective_timescale()`: テストの有効なタイムスケールを取得（自動検出 + YAML オーバーライド）
-- **⭐ NEW** `validate_timescales()`: タイムスケールの整合性を検証し、混在を警告
+| 項目 | 旧実装 | 新実装 (⭐) |
+|------|--------|------------|
+| **初期化パラメータ** | `verilator_config` | `simulator_type=None` |
+| **コンパイル** | `verilate()` メソッド | `simulator.compile()` へ委譲 |
+| **シミュレーション** | `run_simulation()` メソッド | `simulator.run_simulation()` へ委譲 |
+| **クリーンアップ** | `clean()` メソッド | `simulator.clean()` へ委譲 |
+| **タイムスケール** | `get_effective_timescale()` | `simulator.get_effective_timescale()` へ移動 |
+| **検証** | `validate_timescales()` | `simulator.validate_timescales()` へ移動 |
+
+**残存メソッド**:
+- `clean()`: シミュレータの `clean()` を呼び出す
+- `view_waveform()`: GTKWave 起動（シミュレータ非依存）
+- `run()`: 完全なテストフローを実行（シミュレータ使用）
+
+**削除されたメソッド**:
+- ❌ `verilate()`: `VerilatorSimulator.compile()` へ移動
+- ❌ `run_simulation()`: `BaseSimulator.run_simulation()` へ移動
+- ❌ `get_effective_timescale()`: `BaseSimulator.get_effective_timescale()` へ移動
+- ❌ `validate_timescales()`: `BaseSimulator.validate_timescales()` へ移動
 
 ### 4.4. タイムスケール関連の新機能
 
@@ -309,18 +978,17 @@ timescale = extract_timescale("tb/counter_tb.sv")
 
 #### 4.4.2. TestRunner.get_effective_timescale() メソッド
 
-テストの有効なタイムスケールを決定します（ハイブリッドアプローチ）。
+テストの有効なタイムスケールを決定します（自動検出アプローチ）。
 
 ```python
 def get_effective_timescale(self):
     """
     このテストの有効なタイムスケールを決定
 
-    戦略（ハイブリッドアプローチ）:
-    1. YAML 設定で 'timescale' が明示的に設定されている場合、それを使用（オーバーライド）
-    2. それ以外の場合、テストベンチファイルから自動検出
-    3. フォールバック: RTL ファイルをチェック
-    4. 最終フォールバック: デフォルトの ('1ns', '1ps')
+    戦略（自動検出のみ）:
+    1. テストベンチファイルから自動検出
+    2. フォールバック: RTL ファイルをチェック
+    3. 最終フォールバック: デフォルトの ('1ns', '1ps')
 
     Returns:
         tuple: (unit, precision) 例: ('1ns', '1ps')
@@ -329,10 +997,9 @@ def get_effective_timescale(self):
 ```
 
 **実行フロー**:
-1. YAML の `timescale` フィールドをチェック（オーバーライド）
-2. テストベンチファイルから `timescale` を抽出
-3. RTL ファイルから `timescale` を抽出（フォールバック）
-4. デフォルトの `1ns/1ps` を使用（最終フォールバック）
+1. テストベンチファイルから `timescale` を抽出
+2. RTL ファイルから `timescale` を抽出（フォールバック）
+3. デフォルトの `1ns/1ps` を使用（最終フォールバック）
 
 #### 4.4.3. TestRunner.validate_timescales() メソッド
 
@@ -595,7 +1262,7 @@ Python の `subprocess.run()` の `timeout` パラメータに渡されます。
 #   実際のタイムアウト: 50000ps = 0.05us（意図の 1000分の1！）
 ```
 
-**新しい解決策**: ハイブリッドアプローチによる自動検出 + オプションのオーバーライド
+**新しい解決策**: 自動検出アプローチによる正確なタイムスケール変換
 
 ### 6.2. 主な機能
 
@@ -695,16 +1362,7 @@ def validate_timescales(self):
    Using testbench timescale for simulation timeout calculation
 ```
 
-#### 6.2.4. オプションの YAML オーバーライド
-
-必要に応じて、YAML 設定で明示的にタイムスケールを指定できます。
-
-```yaml
-tests:
-  - name: serdes_tx
-    sim_timeout: "100us"
-    timescale: "1ps"  # 自動検出をオーバーライド（高速 SerDes 用）
-```
+**重要**: タイムスケールは常に自動検出されます。すべてのテストファイルで同じタイムスケールを使用することを推奨します。
 
 ### 6.3. タイムスケール選択ガイドライン
 
@@ -885,6 +1543,9 @@ Examples:
 
   # Use custom config file
   python3 run_test.py --config my_tests.yaml --test counter
+
+  # ⭐ NEW: Use VCS simulator
+  python3 run_test.py --test counter --simulator vcs
         """
     )
 
@@ -921,6 +1582,11 @@ Examples:
         "--view",
         action="store_true",
         help="Open GTKWave after simulation"
+    )
+    parser.add_argument(
+        "--simulator",
+        choices=["verilator", "vcs"],
+        help="Override simulator selection (default: from config)"
     )
 ```
 
@@ -961,11 +1627,28 @@ Examples:
    python3 scripts/run_test.py --config custom_tests.yaml --test mytest
    ```
 
+8. **⭐ NEW: シミュレータ指定**:
+   ```bash
+   # Verilator を使用（デフォルト）
+   python3 scripts/run_test.py --test counter --simulator verilator
+
+   # VCS を使用
+   python3 scripts/run_test.py --test counter --simulator vcs
+
+   # すべてのテストを VCS で実行
+   python3 scripts/run_test.py --all --simulator vcs
+
+   # VCS + 波形ビューア
+   python3 scripts/run_test.py --test counter --simulator vcs --view
+   ```
+
 ---
 
 ## 8. テストフロー
 
-### 8.1. 完全な実行フロー
+### 8.1. ⭐ 更新: 完全な実行フロー
+
+TestRunner の `run()` メソッドは、シミュレータ抽象化レイヤーを使用して実行されます。
 
 ```python
 def run(self, view=False):
@@ -974,15 +1657,17 @@ def run(self, view=False):
     print(f"  Test: {self.test_name}")
     if 'description' in self.test_config:
         print(f"  Description: {self.test_config['description']}")
+    print(f"  Simulator: {self.simulator_type}")  # ⭐ NEW: 使用シミュレータを表示
     print("=" * 70)
     print()
 
+    # ⭐ NEW: シミュレータインスタンスに委譲
     # Compile
-    if not self.verilate():
+    if not self.simulator.compile():
         return False
 
     # Simulate
-    if not self.run_simulation():
+    if not self.simulator.run_simulation():
         return False
 
     # View waveform if requested
@@ -992,24 +1677,34 @@ def run(self, view=False):
     return True
 ```
 
-### 8.2. コンパイルフェーズ (`verilate()`)
+**主な変更点**:
+- `self.verilate()` → `self.simulator.compile()`: コンパイルをシミュレータに委譲
+- `self.run_simulation()` → `self.simulator.run_simulation()`: シミュレーションをシミュレータに委譲
+- シミュレータタイプを表示（verilator または vcs）
+
+### 8.2. ⭐ 更新: コンパイルフェーズ
+
+コンパイルは `BaseSimulator.compile()` インターフェースを通じて実行されます。実際の処理は各シミュレータクラスが実装します。
+
+**Verilator の場合** (`VerilatorSimulator.compile()`):
 
 ```python
-def verilate(self):
+def compile(self):
     """Compile SystemVerilog with Verilator"""
     print(f"🔨 Compiling test '{self.test_name}' with Verilator...")
 
     # Build command
     cmd = ["verilator"]
 
-    # Add common flags
-    cmd.extend(self.verilator_config.get('common_flags', []))
+    # Add common flags (from YAML simulators.verilator.common_flags)
+    cmd.extend(self.sim_config.get('common_flags', []))
+    # 例: --binary, --timing, -Wall, --trace, -Wno-TIMESCALEMOD
 
     # Add test-specific flags
     cmd.extend(self.test_config.get('verilator_extra_flags', []))
 
     # Add output directory
-    cmd.extend(["-Mdir", str(self.obj_dir)])
+    cmd.extend(["-Mdir", str(self.get_work_dir())])
 
     # Add top module
     cmd.extend(["--top-module", self.top_module])
@@ -1019,25 +1714,66 @@ def verilate(self):
 
     # Add simulation timeout parameter if specified
     if 'sim_timeout' in self.test_config:
-        sim_timeout_str = self.test_config['sim_timeout']
-        sim_timeout_value = parse_sim_timeout(sim_timeout_str)
-        cmd.append(f"-GSIM_TIMEOUT={sim_timeout_value}")
-        print(f"   Simulation timeout: {sim_timeout_str} ({sim_timeout_value} time units)")
+        timescale_unit, _ = self.get_effective_timescale()
+        sim_timeout_value = parse_sim_timeout(
+            self.test_config['sim_timeout'],
+            timescale_unit
+        )
+        cmd.append(f"-GSIM_TIMEOUT={sim_timeout_value}")  # Verilator 形式
 
-    # Add RTL files explicitly (supports subdirectory paths like tx/tx_ffe.sv)
+    # Add RTL files and testbench
     for rtl_file in self.rtl_files:
-        rtl_path = self.rtl_dir / rtl_file
-        cmd.append(str(rtl_path))
-
-    # Add testbench file
+        cmd.append(str(self.rtl_dir / rtl_file))
     cmd.append(str(self.tb_dir / self.testbench_file))
 
-    print(f"   Command: {' '.join(cmd)}")
+    # Execute compilation
+    result = subprocess.run(cmd, cwd=self.project_root, ...)
+    return result.returncode == 0
+```
+
+**VCS の場合** (`VCSSimulator.compile()`):
+
+```python
+def compile(self):
+    """Compile SystemVerilog with VCS"""
+    print(f"🔨 Compiling test '{self.test_name}' with VCS...")
+
+    cmd = ["vcs"]
+
+    # Add common flags (from YAML simulators.vcs.common_flags)
+    cmd.extend(self.sim_config.get('common_flags', []))
+    # 例: -sverilog, -timescale=1ns/1ps, -debug_access+all, +vcs+lic+wait, -full64
+
+    # Add test-specific flags
+    cmd.extend(self.test_config.get('vcs_extra_flags', []))
+
+    # Output executable
+    cmd.extend(["-o", str(self.get_executable_path())])  # simv
+
+    # Add simulation timeout parameter if specified
+    if 'sim_timeout' in self.test_config:
+        timescale_unit, _ = self.get_effective_timescale()
+        sim_timeout_value = parse_sim_timeout(
+            self.test_config['sim_timeout'],
+            timescale_unit
+        )
+        cmd.append(f"+define+SIM_TIMEOUT={sim_timeout_value}")  # VCS 形式
+
+    # Add RTL files and testbench
+    for rtl_file in self.rtl_files:
+        cmd.append(str(self.rtl_dir / rtl_file))
+    cmd.append(str(self.tb_dir / self.testbench_file))
+
+    # Execute compilation
+    result = subprocess.run(cmd, cwd=self.project_root, ...)
+    return result.returncode == 0
 ```
 
 **実行されるコマンド例**:
+
+**Verilator**:
 ```bash
-verilator --timing --binary --trace -Wno-TIMESCALEMOD \
+verilator --binary --timing -Wall --trace -Wno-TIMESCALEMOD \
   -Mdir sim/obj_dir \
   --top-module counter_tb \
   -y rtl \
@@ -1046,29 +1782,43 @@ verilator --timing --binary --trace -Wno-TIMESCALEMOD \
   tb/counter_tb.sv
 ```
 
-### 8.3. シミュレーションフェーズ (`run_simulation()`)
+**VCS**:
+```bash
+vcs -sverilog -timescale=1ns/1ps -debug_access+all +vcs+lic+wait -full64 \
+  -o sim/vcs/simv \
+  +define+SIM_TIMEOUT=50000 \
+  rtl/counter.sv \
+  tb/counter_tb.sv
+```
+
+### 8.3. ⭐ 更新: シミュレーションフェーズ
+
+シミュレーション実行も `BaseSimulator.run_simulation()` インターフェースを通じて行われます。
+
+**共通実装** (VerilatorSimulator / VCSSimulator):
 
 ```python
 def run_simulation(self):
     """Execute the simulation"""
     print(f"🚀 Running simulation for '{self.test_name}'...")
 
-    if not self.executable.exists():
-        print(f"✗ Executable not found: {self.executable}")
+    executable = self.get_executable_path()  # ⭐ Verilator: V{module}, VCS: simv
+    if not executable.exists():
+        print(f"✗ Executable not found: {executable}")
         return False
 
-    # Get execution timeout from verilator config (for freeze protection)
+    # Get execution timeout from simulator config (for freeze protection)
     timeout_seconds = None
-    if 'execution_timeout' in self.verilator_config:
-        timeout_seconds = parse_timeout(self.verilator_config['execution_timeout'])
-        print(f"   Execution timeout: {self.verilator_config['execution_timeout']} ({timeout_seconds}s)")
+    if 'execution_timeout' in self.sim_config:  # ⭐ simulator-specific config
+        timeout_seconds = parse_timeout(self.sim_config['execution_timeout'])
+        print(f"   Execution timeout: {self.sim_config['execution_timeout']} ({timeout_seconds}s)")
 
     try:
         # Make sure waves directory exists
         self.waves_dir.mkdir(parents=True, exist_ok=True)
 
         result = subprocess.run(
-            [str(self.executable)],
+            [str(executable)],
             cwd=self.project_root,
             check=True,
             capture_output=True,
@@ -1099,6 +1849,129 @@ def run_simulation(self):
         print(f"\nStdout:\n{e.stdout}")
         print(f"\nStderr:\n{e.stderr}")
         return False
+```
+
+**主な変更点**:
+- `self.executable` → `self.get_executable_path()`: シミュレータ固有のパス取得
+- `self.verilator_config` → `self.sim_config`: シミュレータ非依存の設定参照
+
+#### 8.3.1. ⭐ 更新: 実行ファイルの構築
+
+実行ファイルパスは各シミュレータクラスの `get_executable_path()` メソッドで決定されます。
+
+**Verilator の場合**:
+
+```python
+class VerilatorSimulator(BaseSimulator):
+    def get_work_dir(self) -> Path:
+        return self.project_root / self.project_config.get('obj_dir', 'sim/obj_dir')
+
+    def get_executable_path(self) -> Path:
+        # Verilator の命名規則: "V{top_module}"
+        return self.get_work_dir() / f"V{self.top_module}"
+
+# 実行例（counter テスト）
+# top_module: counter_tb
+# → 実行ファイル: sim/obj_dir/Vcounter_tb
+```
+
+**VCS の場合**:
+
+```python
+class VCSSimulator(BaseSimulator):
+    def get_work_dir(self) -> Path:
+        return self.project_root / self.project_config.get('vcs_dir', 'sim/vcs')
+
+    def get_executable_path(self) -> Path:
+        # VCS の命名規則: 常に "simv"
+        return self.get_work_dir() / "simv"
+
+# 実行例（counter テスト）
+# top_module: counter_tb
+# → 実行ファイル: sim/vcs/simv
+```
+
+**他のテストの例**:
+- `demux_4bit` テスト:
+  - Verilator: `sim/obj_dir/Vdemux_4bit_tb`
+  - VCS: `sim/vcs/simv`
+- `tx_ffe` テスト:
+  - Verilator: `sim/obj_dir/Vtx_ffe_tb`
+  - VCS: `sim/vcs/simv`
+
+#### 8.3.2. ⭐ 更新: 実行されるコマンド
+
+`subprocess.run([str(executable)], ...)` は各シミュレータの実行ファイルを起動します。
+
+**Verilator の場合**:
+```bash
+# 作業ディレクトリ（cwd）: /home/rs133057/src/github.com/himmel17/sv_test1
+# 実行コマンド:
+./sim/obj_dir/Vcounter_tb
+```
+
+**VCS の場合**:
+```bash
+# 作業ディレクトリ（cwd）: /home/rs133057/src/github.com/himmel17/sv_test1
+# 実行コマンド:
+./sim/vcs/simv
+```
+
+**シェルで実行する場合の等価なコマンド**:
+```bash
+cd /home/rs133057/src/github.com/himmel17/sv_test1
+./sim/obj_dir/Vcounter_tb  # Verilator
+# または
+./sim/vcs/simv              # VCS
+```
+
+**実行ファイルの特性**:
+- **スタンドアロン実行ファイル**: 両シミュレータとも、単独で実行可能な実行ファイルを生成
+- **引数不要**: 実行ファイルはパラメータなしで起動（シミュレーション設定はコンパイル時に埋め込み済み）
+  - Verilator: `-GSIM_TIMEOUT=50000`
+  - VCS: `+define+SIM_TIMEOUT=50000`
+- **作業ディレクトリ**: `cwd=self.project_root` により、プロジェクトルートから実行
+  - テストベンチ内の相対パス（`$dumpfile("sim/waves/counter.vcd")`）が正しく解決される
+
+**実行例と出力**:
+```bash
+$ ./sim/obj_dir/Vcounter_tb  # Verilator
+# または
+$ ./sim/vcs/simv              # VCS
+
+Time:     100 ns  Count: 01  Overflow: 0
+Time:     200 ns  Count: 02  Overflow: 0
+Time:     300 ns  Count: 03  Overflow: 0
+...
+Time:   25300 ns  Count: fd  Overflow: 0
+Time:   25400 ns  Count: fe  Overflow: 0
+Time:   25500 ns  Count: ff  Overflow: 1
+Time:   25600 ns  Count: 00  Overflow: 0
+*** PASSED: All tests passed successfully ***
+```
+
+**VCD ファイルの生成**:
+実行ファイルが実行されると、テストベンチ内の以下のコードにより VCD ファイルが生成されます：
+
+```systemverilog
+// counter_tb.sv 内
+initial begin
+    $dumpfile("sim/waves/counter.vcd");  // 相対パスで指定
+    $dumpvars(0, counter_tb);
+end
+```
+
+作業ディレクトリがプロジェクトルートなので：
+```
+作業ディレクトリ: /home/rs133057/src/github.com/himmel17/sv_test1
+相対パス: sim/waves/counter.vcd
+→ 解決後の絶対パス: /home/rs133057/src/github.com/himmel17/sv_test1/sim/waves/counter.vcd
+```
+
+これは、シミュレータクラスで構築された `self.vcd_file` と一致します：
+```python
+self.vcd_file = self.waves_dir / f"{self.test_name}.vcd"
+# 結果: /home/.../sv_test1/sim/waves/counter.vcd
 ```
 
 ### 8.4. 波形表示フェーズ (`view_waveform()`)
@@ -1218,9 +2091,22 @@ python3 scripts/run_test.py --list
 ```
 
 **解決策**:
-- Verilator のエラーメッセージを確認
+- シミュレータのエラーメッセージを確認
 - RTL ファイルのパスが正しいか確認
-- `verilator_extra_flags` で追加フラグが必要か確認
+- Verilator: `verilator_extra_flags` で追加フラグが必要か確認
+- VCS: `vcs_extra_flags` で追加フラグが必要か確認
+
+**⭐ VCS 固有の問題**:
+```
+# VCS ライセンスエラー
+✗ Error: VCS license not found
+```
+**解決策**: VCS ライセンスサーバーの設定を確認
+```bash
+# 環境変数の確認
+echo $VCS_HOME
+echo $LM_LICENSE_FILE
+```
 
 ### 9.5. シミュレーションタイムアウト
 
@@ -1337,20 +2223,65 @@ module your_module;
 endmodule
 ```
 
+### 9.11. ⭐ NEW: VCS 実行ファイルが見つからない
+
+**エラー**:
+```
+✗ Executable not found: sim/vcs/simv
+```
+
+**原因**:
+VCS コンパイルが失敗したか、出力ディレクトリが間違っています。
+
+**解決策**:
+```bash
+# VCS コンパイルログを確認
+ls -la sim/vcs/
+
+# コンパイルを再実行（詳細モード）
+python3 scripts/run_test.py --test counter --simulator vcs
+
+# 手動コンパイルでデバッグ
+vcs -sverilog rtl/counter.sv tb/counter_tb.sv -o sim/vcs/simv
+```
+
+### 9.12. ⭐ NEW: VCS 成果物のクリーンアップ
+
+VCS は Verilator よりも多くの成果物を生成します：
+- `sim/vcs/` - 実行ファイル (simv)
+- `csrc/` - C ソースコード
+- `simv.daidir/` - シミュレーション情報
+- `ucli.key` - ライセンスキー
+
+**クリーンアップコマンド**:
+```bash
+python3 scripts/run_test.py --clean-only --test counter --simulator vcs
+```
+
 ---
 
 ## 10. まとめ
 
 `run_test.py` は以下の機能を提供します：
 
+✅ **⭐ マルチシミュレータ対応**: Verilator と Synopsys VCS の両方に対応
+✅ **柔軟なシミュレータ選択**: CLI、YAML 設定、テストごとの指定が可能
 ✅ **YAML ベースのテスト管理**: 複数テストを設定ファイルで一元管理
 ✅ **自動化されたフロー**: コンパイル → シミュレーション → 波形表示
 ✅ **柔軟なタイムアウト**: シミュレーション時間と実行時間の両方を制御
-✅ **⭐ タイムスケール自動検出**: SystemVerilog の `timescale` を自動的に認識して正確に変換
+✅ **タイムスケール自動検出**: SystemVerilog の `timescale` を自動的に認識して正確に変換
 ✅ **サブディレクトリ対応**: 階層的なプロジェクト構造をサポート
 ✅ **詳細なレポート**: テスト結果のサマリー表示
 
-### 10.1. 新機能（タイムスケール対応）
+### 10.1. ⭐ NEW: マルチシミュレータ対応
+
+- 🔧 **抽象化レイヤー**: BaseSimulator、VerilatorSimulator、VCSSimulator による統一インターフェース
+- 🏭 **Factory パターン**: SimulatorFactory による柔軟なシミュレータ生成
+- 🎛️ **選択優先順位**: CLI > テスト設定 > グローバルデフォルト > フォールバック
+- 📋 **YAML 設定**: simulators セクションでシミュレータ固有の設定を管理
+- 🔄 **後方互換性**: 既存の verilator セクションもサポート
+
+### 10.2. タイムスケール対応
 
 - 🎯 **自動検出**: テストベンチから `timescale` を自動的に読み取り
 - 🔄 **正確な変換**: タイムスケールに基づいてタイムアウトを正確に計算
@@ -1364,34 +2295,66 @@ endmodule
 
 ## 11. 参考情報
 
-### 11.1. YAML 設定ファイルの例
+### 11.1. ⭐ 更新: YAML 設定ファイルの例（マルチシミュレータ対応）
 
 ```yaml
 project:
   rtl_dir: rtl
   tb_dir: tb
   sim_dir: sim
-  obj_dir: sim/obj_dir
+  obj_dir: sim/obj_dir      # Verilator 成果物
+  vcs_dir: sim/vcs          # ⭐ NEW: VCS 成果物
   waves_dir: sim/waves
+  default_simulator: verilator  # ⭐ NEW: グローバルデフォルト
 
-verilator:
-  common_flags:
-    - --timing
-    - --binary
-    - --trace
-    - -Wno-TIMESCALEMOD
-  execution_timeout: "30s"
+# ⭐ NEW: シミュレータ固有の設定
+simulators:
+  verilator:
+    common_flags:
+      - --binary
+      - --timing
+      - -Wall
+      - --trace
+      - -Wno-TIMESCALEMOD
+    execution_timeout: "30s"
+
+  vcs:
+    common_flags:
+      - -sverilog
+      - -timescale=1ns/1ps
+      - -debug_access+all
+      - +vcs+lic+wait
+      - -full64
+    execution_timeout: "30s"
+
+# ⭐ 後方互換性: 旧形式の verilator セクションもサポート
+# verilator:
+#   common_flags: [...]
+#   execution_timeout: "30s"
 
 tests:
   - name: counter
     enabled: true
-    description: "8-bit synchronous counter test"
+    description: "8-bit synchronous counter with overflow detection"
     top_module: counter_tb
     testbench_file: counter_tb.sv
     rtl_files:
       - counter.sv
     verilator_extra_flags: []
+    vcs_extra_flags: []       # ⭐ NEW: VCS 固有フラグ
     sim_timeout: "50us"
+    # simulator: vcs          # ⭐ NEW: テストごとのオーバーライド（オプション）
+
+  - name: demux_4bit
+    enabled: true
+    description: "4-bit 1:4 demultiplexer"
+    top_module: demux_4bit_tb
+    testbench_file: demux_4bit_tb.sv
+    rtl_files:
+      - demux_4bit.sv
+    verilator_extra_flags: []
+    vcs_extra_flags: []
+    sim_timeout: "10us"
 ```
 
 ### 11.2. テストベンチのテンプレート

@@ -33,15 +33,50 @@ uv run python3 scripts/run_test.py --all
 
 ## Test Framework Architecture
 
+### Multi-Simulator Support
+
+The test framework supports **multiple simulators** through a clean abstraction layer:
+- **Verilator** (default) - Open-source SystemVerilog simulator
+- **Synopsys VCS** - Commercial high-performance simulator
+
+**Simulator Selection** (priority order):
+1. Command-line: `--simulator verilator|vcs`
+2. Per-test: `simulator: vcs` in test YAML config
+3. Global default: `default_simulator: verilator` in project config
+4. Fallback: `verilator`
+
+**Architecture**:
+- `scripts/simulators.py` - Simulator abstraction layer
+  - `BaseSimulator` - Abstract interface
+  - `VerilatorSimulator` - Verilator implementation
+  - `VCSSimulator` - VCS implementation
+  - `SimulatorFactory` - Creates appropriate simulator instance
+
+**Usage Examples**:
+```bash
+# Use default (verilator)
+uv run python3 scripts/run_test.py --test counter
+
+# Override to VCS
+uv run python3 scripts/run_test.py --test counter --simulator vcs
+
+# Per-test override in YAML
+tests:
+  - name: high_speed_serdes
+    simulator: vcs  # Use VCS for this specific test
+```
+
 ### YAML-Based Test Configuration System
 
-The project uses a **centralized YAML configuration** (`tests/test_config.yaml`) to manage multiple test cases. This architecture enables scaling from single module tests to complex integration tests without modifying Python code.
+The project uses a **centralized YAML configuration** (`tests/test_config.yaml`) to manage multiple test cases and simulator settings. This architecture enables scaling from single module tests to complex integration tests without modifying Python code.
 
 **Key Components:**
 
 1. **`tests/test_config.yaml`** - Central test registry
+   - **Simulator configuration**: `simulators` section with verilator/vcs settings
+   - **Global default**: `default_simulator` field (verilator or vcs)
    - Defines all available tests
-   - Per-test Verilator flags
+   - Per-test simulator override
    - RTL file dependencies (supports subdirectory paths like `tx/tx_ffe.sv`)
    - Enable/disable individual tests
    - Simulation timeout configuration (`sim_timeout`)
@@ -52,11 +87,15 @@ The project uses a **centralized YAML configuration** (`tests/test_config.yaml`)
 
 2. **`scripts/run_test.py`** - Test orchestrator (YAML-driven)
    - `TestConfig` class: Parses YAML, filters enabled tests
-   - `TestRunner` class: Executes individual tests (compile → simulate → report)
+   - `TestRunner` class: Orchestrates test execution using simulator abstraction
    - Generates per-test VCD files: `sim/waves/{test_name}.vcd`
-   - `parse_sim_timeout()`: Converts timeout strings to numeric values for Verilator `-G` parameter
 
-3. **Flow**: YAML → TestConfig → TestRunner → Verilator (with `-GSIM_TIMEOUT=value`) → VCD → (Optional) GTKWave
+3. **`scripts/simulators.py`** - Simulator abstraction layer
+   - Isolates simulator-specific logic
+   - Handles compilation and simulation for each simulator
+   - Manages simulator-specific artifacts and executables
+
+4. **Flow**: YAML → TestConfig → TestRunner → SimulatorFactory → Simulator (Verilator/VCS) → VCD → (Optional) GTKWave
 
 ### Important: VCD File Naming Convention
 
@@ -100,6 +139,12 @@ uv run python3 scripts/run_test.py --test counter --view
 
 # Clean build
 uv run python3 scripts/run_test.py --clean --test counter
+
+# Use VCS simulator
+uv run python3 scripts/run_test.py --test counter --simulator vcs
+
+# Run all tests with VCS
+uv run python3 scripts/run_test.py --all --simulator vcs
 ```
 
 ### Alternative: Activate Virtual Environment First
@@ -146,14 +191,13 @@ python3 scripts/run_test.py --all
        - common.sv                    # Can mix root and subdirectory paths
      verilator_extra_flags: []        # Optional: add flags like --trace-underscore
      sim_timeout: "50us"              # Simulation time timeout (passed via -GSIM_TIMEOUT)
-     timescale: "1ns"                 # Optional: override auto-detected timescale (e.g., "1ps" for high-speed)
    ```
 
-   **Timescale Handling** (Auto-Detection with Optional Override):
+   **Timescale Handling** (Auto-Detection Only):
    - Framework **automatically detects** timescale from testbench file
-   - Correctly converts `sim_timeout` to appropriate time units
-   - Optional `timescale` field overrides auto-detection if needed
+   - Correctly converts `sim_timeout` to appropriate time units based on detected timescale
    - Validates consistency and warns if mixed timescales detected
+   - **Best practice**: Ensure all files in a test use the same timescale
 
    **Subdirectory Example** (for SerDes modules in `rtl/tx/`, `rtl/rx/`):
    ```yaml
