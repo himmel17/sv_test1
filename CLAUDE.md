@@ -565,11 +565,30 @@ uv run python3 scripts/verify_noise_match.py
 ```
 
 **Key Implementation Details**:
+
+- **Stateful Design with C Static Variables**:
+  - All state variables declared as `static` in C persist across DPI-C function calls
+  - `static int initialized`: Stays at 1 after first initialization, prevents re-initialization
+  - `static double noise_sources[10]`: Noise source values preserved between calls
+  - `static unsigned long sample_counter`: Increments continuously (0→1→2→...)
+  - **Critical**: Without `static`, variables would reset to initial values on every call
+  - **Example sequence**:
+    - Call 1: `initialized=0` → init → `initialized=1`, `counter=0` → return
+    - Call 2: `initialized=1` (retained!) → skip init, `counter=1` → return
+    - Call 3: `initialized=1` (retained!) → skip init, `counter=2` → return
+  - This is fundamentally different from normal C function local variables
+  - Static variables are allocated once in program memory, not on the stack
+
 - **Different RNGs**: C `rand()` vs Python `random.uniform()` - samples differ but statistics match
-- **Stateful Design**: Static variables persist across DPI-C calls (NOT thread-safe)
-- **NOT Pure**: Function has side effects, do NOT declare as `pure` in SystemVerilog
+
+- **NOT Pure**: Function has side effects (modifies static state), do NOT declare as `pure` in SystemVerilog
+
+- **NOT Thread-Safe**: Uses static variables without locking, assumes single-threaded simulation
+
 - **Empirical Calibration**: RAW_RMS adjusted to compensate for RNG differences
+
 - **Reset Skip**: Testbench collects 1044 samples (20 for reset skip + 1024 valid)
+
 - **VCD Parsing**: Skips first 10 samples (reset period) to align sample_counter values
 
 **Use Case**: Demonstrates how to model analog effects (noise, jitter) in digital simulation for SerDes/RF applications.

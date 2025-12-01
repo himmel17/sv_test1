@@ -445,10 +445,42 @@ double dpi_flicker_noise(void) {
 ```
 
 **Important Notes:**
-- **NOT thread-safe**: Uses static variables
-- **NOT pure**: Do NOT declare as `pure` in SystemVerilog
-- **Stateful**: Each call modifies internal state
-- **Deterministic**: Fixed seed ensures reproducibility
+
+- **Stateful via C Static Variables** (CRITICAL CONCEPT):
+  - All state variables are declared with C's `static` keyword
+  - **`static` variables retain their values between function calls**
+  - This is fundamentally different from normal C local variables
+  - **Execution sequence example**:
+    ```
+    Time    Event                               initialized value
+    ----------------------------------------------------------------
+    0ns     Program start                       0 (initialized once)
+    100ns   1st clock: call dpi_flicker_noise()
+            → if (!initialized) is TRUE         0
+            → init_flicker_noise() executes
+            → initialized = 1                   0 → 1
+            → return noise value
+    110ns   2nd clock: call dpi_flicker_noise()
+            → if (!initialized) is FALSE        1 (RETAINED!)
+            → skip initialization
+            → return noise value
+    120ns   3rd clock: call dpi_flicker_noise()
+            → if (!initialized) is FALSE        1 (STILL RETAINED!)
+            → skip initialization
+            → return noise value
+    ```
+  - **Without `static`**: Variables would reset to initial values on every call
+  - **With `static`**: Variables allocated once in program memory (not stack)
+  - All three static variables persist:
+    - `static int initialized`: Stays 1 after first init
+    - `static double noise_sources[10]`: Array preserved across calls
+    - `static unsigned long sample_counter`: Increments 0→1→2→3→...
+
+- **NOT thread-safe**: Uses static variables without synchronization primitives
+
+- **NOT pure**: Do NOT declare as `pure` in SystemVerilog (has side effects - modifies static state)
+
+- **Deterministic**: Fixed seed ensures reproducibility across simulation runs
 
 ### SystemVerilog Integration
 

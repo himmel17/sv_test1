@@ -316,11 +316,30 @@ uv run python3 scripts/verify_noise_match.py
 ```
 
 **実装の詳細**:
+
+- **Cのstatic変数によるステートフル設計**:
+  - C言語の`static`キーワードで宣言された変数はDPI-C関数呼び出し間で値を保持
+  - `static int initialized`: 初回初期化後に1を保持、再初期化を防止
+  - `static double noise_sources[10]`: ノイズソース値が呼び出し間で保存される
+  - `static unsigned long sample_counter`: 連続的にインクリメント（0→1→2→...）
+  - **重要**: `static`なしの場合、毎回の呼び出しで初期値にリセットされる
+  - **実行シーケンス例**:
+    - 呼び出し1: `initialized=0` → 初期化 → `initialized=1`, `counter=0` → return
+    - 呼び出し2: `initialized=1`（保持！） → 初期化スキップ, `counter=1` → return
+    - 呼び出し3: `initialized=1`（保持！） → 初期化スキップ, `counter=2` → return
+  - 通常のCローカル変数とは根本的に異なる動作
+  - static変数はスタックではなくプログラムメモリに一度だけ割り当てられる
+
 - **異なる乱数生成器**: C `rand()` vs Python `random.uniform()` - サンプルは異なるが統計特性は一致
-- **ステートフル設計**: static変数がDPI-C呼び出し間で永続（スレッドセーフではない）
-- **Pure関数ではない**: 副作用があるため、SystemVerilogで`pure`宣言しない
+
+- **Pure関数ではない**: 副作用（static状態変更）があるため、SystemVerilogで`pure`宣言しない
+
+- **スレッドセーフではない**: ロックなしでstatic変数を使用、シングルスレッドシミュレーション想定
+
 - **経験的較正**: RNG差を補償するためにRAW_RMS調整
+
 - **リセットスキップ**: テストベンチは1044サンプル収集（リセットスキップ20 + 有効1024）
+
 - **VCD解析**: 最初の10サンプル（リセット期間）をスキップしてsample_counter値を整列
 
 **用途**: SerDes/RFアプリケーションのデジタルシミュレーションでアナログ効果（ノイズ、ジッタ）をモデル化する方法を実演
