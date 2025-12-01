@@ -74,6 +74,32 @@ tests:
     verilator_extra_flags: []
     sim_timeout: "10us"  # Simulation timeout (passed to testbench via -GSIM_TIMEOUT)
 
+  # DPI-C sine wave generator (educational example)
+  - name: sine_wave_gen
+    enabled: true
+    description: "DPI-C sine wave generator - educational example demonstrating SystemVerilog-C integration"
+    top_module: sine_wave_gen_tb
+    testbench_file: sine_wave_gen_tb.sv
+    rtl_files:
+      - sine_wave_gen.sv
+    verilator_extra_flags:
+      - ../dpi/dpi_math.c  # DPI-C C source file
+      - -LDFLAGS            # Linker flags follow
+      - -lm                 # Link math library for sin() function
+    sim_timeout: "50us"  # Simulation timeout (passed to testbench via -GSIM_TIMEOUT)
+
+  # Ideal amplifier with flicker noise (DPI-C PoC)
+  - name: ideal_amp_with_noise
+    enabled: true
+    description: "Ideal amplifier with flicker (1/f) noise injection via DPI-C - Proof of Concept"
+    top_module: ideal_amp_with_noise_tb
+    testbench_file: ideal_amp_with_noise_tb.sv
+    rtl_files:
+      - ideal_amp_with_noise.sv
+    verilator_extra_flags:
+      - ../dpi/dpi_flicker_noise.c  # DPI-C flicker noise generator
+    sim_timeout: "15us"  # Simulation timeout (1024 samples @ 100MHz = 10.24us + margin)
+
   # SerDes Transmitter (template - uncomment when ready)
   # - name: serdes_tx
   #   enabled: true

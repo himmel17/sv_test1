@@ -11,7 +11,10 @@ SystemVerilog SerDes伝送路回路（SerDes transmission line circuit）開発�
 **Current Status**:
 - ✅ **Specifications Complete**: Comprehensive Markdown specifications for FFE, DFE, CTLE, system architecture, and test strategy
 - ✅ **Test Framework Ready**: YAML-driven test infrastructure with Verilator + GTKWave
-- ✅ **Working Examples**: Two example modules (counter, demux_4bit) demonstrating test patterns
+- ✅ **Working Examples**: Three example modules demonstrating test patterns
+  - `counter.sv` - 8-bit synchronous counter with overflow detection
+  - `demux_4bit.sv` - 4-bit 1:4 demultiplexer
+  - `sine_wave_gen.sv` - **DPI-C educational example** (SystemVerilog-C integration)
 - 🚧 **Next Phase**: RTL implementation of SerDes modules based on specifications
 
 ## Quick Setup
@@ -375,6 +378,7 @@ Each new module must:
 - `rtl/` - RTL modules (DUT - Design Under Test)
   - `counter.sv` - 8-bit synchronous counter (example)
   - `demux_4bit.sv` - 4-bit 1:4 demultiplexer (example)
+  - `sine_wave_gen.sv` - DPI-C sine wave generator (educational example)
   - `tx/` - Transmitter modules (to be implemented from specifications)
   - `rx/` - Receiver modules (to be implemented from specifications)
   - `channel/` - Channel models (to be implemented)
@@ -382,8 +386,13 @@ Each new module must:
 - `tb/` - Testbenches with self-checking logic
   - `counter_tb.sv` - Counter testbench (example)
   - `demux_4bit_tb.sv` - Demultiplexer testbench (example)
+  - `sine_wave_gen_tb.sv` - Sine wave generator testbench (DPI-C example)
   - `tx/` - Transmitter testbenches (supports subdirectories)
   - `rx/` - Receiver testbenches (supports subdirectories)
+- `dpi/` - **DPI-C C source files** (SystemVerilog-C integration)
+  - `dpi_math.c` - Math function wrappers (sin, cos) for DPI-C
+  - `README.md` - Comprehensive DPI-C tutorial (English)
+  - `README_ja.md` - Comprehensive DPI-C tutorial (日本語)
 - `tests/test_config.yaml` - **Central test registry** (modify to add tests)
 - `scripts/run_test.py` - Test orchestrator (rarely needs modification)
 - `pyproject.toml` - **Python dependencies** (runtime + dev tools) - Primary source
@@ -478,3 +487,205 @@ Comprehensive Markdown specifications for SerDes equalization blocks and system 
 2. Follow specified compilation order for multi-file dependencies
 3. Use serdes_common.sv for shared definitions and parameters
 4. Verify clock domain crossings and reset strategies
+
+---
+
+## DPI-C Examples (Educational)
+
+This project includes complete **DPI-C (Direct Programming Interface for C)** examples demonstrating SystemVerilog-C integration. These are educational examples perfect for learning DPI-C concepts.
+
+### What is DPI-C?
+
+DPI-C enables:
+- Calling C functions from SystemVerilog (e.g., math library functions)
+- Calling SystemVerilog from C (advanced usage)
+- Mixed-language simulation combining hardware and software models
+
+**Note**: DPI-C is **simulation-only** and not synthesizable. Use it for modeling, verification, and testbenches.
+
+### Example 1: Sine Wave Generator (Basic DPI-C)
+
+**Purpose**: Educational example demonstrating basic DPI-C integration using C's `sin()` function.
+
+**Files**:
+- `dpi/dpi_math.c` - C implementation wrapping `sin()` and `cos()` from `math.h`
+- `rtl/sine_wave_gen.sv` - Parameterized sine wave generator using DPI-C
+- `tb/sine_wave_gen_tb.sv` - Self-checking testbench with DPI-C verification
+- `dpi/README.md` - Comprehensive DPI-C tutorial (English)
+- `dpi/README_ja.md` - Comprehensive DPI-C tutorial (日本語)
+
+**Features**:
+- ✅ Simple, well-documented code perfect for learning
+- ✅ Demonstrates `real` ↔ `double` data type mapping
+- ✅ Shows C math library integration with `-lm` flag
+- ✅ Both RTL and testbench use DPI-C (dual usage pattern)
+- ✅ Self-checking verification with automated pass/fail
+- ✅ Comprehensive tutorial covering all DPI-C concepts
+
+### Example 2: Flicker Noise Generator (Advanced DPI-C + Verification)
+
+**Purpose**: Proof of Concept demonstrating stateful DPI-C implementation for analog noise modeling with Python-based verification.
+
+**Files**:
+- `scripts/generate_flicker_noise.py` - Python reference implementation (Voss-McCartney algorithm)
+- `dpi/dpi_flicker_noise.c` - Stateful C implementation for DPI-C
+- `rtl/ideal_amp_with_noise.sv` - Ideal amplifier with noise injection via DPI-C
+- `tb/ideal_amp_with_noise_tb.sv` - Self-checking testbench with DC input
+- `scripts/verify_noise_match.py` - Statistical verification script (Python vs SystemVerilog)
+
+**Features**:
+- ✅ **Stateful DPI-C**: Maintains internal state (noise sources, sample counter) across calls
+- ✅ **1/f Noise**: Implements Voss-McCartney algorithm for flicker noise generation
+- ✅ **Python Prototype → C Implementation**: Workflow demonstrating algorithm validation
+- ✅ **Statistical Verification**: Compares RMS and spectral slope (not sample-by-sample)
+- ✅ **VCD-based Analysis**: Extracts data from simulation waveforms for verification
+- ✅ **Spectral Analysis**: FFT-based power spectral density verification
+- ✅ **Reset Handling**: Proper exclusion of reset transients from analysis
+
+**Algorithm: Voss-McCartney**:
+- Uses 10 noise sources, each updated at different rates (2^i samples)
+- Produces 1/f power spectral density characteristic
+- Deterministic (fixed seed) for reproducibility
+- Target RMS: 0.25V with empirical calibration (RAW_RMS=1.757)
+
+**Verification Workflow**:
+```bash
+# 1. Generate Python reference (1024 samples, 100MHz sampling)
+uv run python3 scripts/generate_flicker_noise.py
+# Output: flicker_noise_reference.npy, flicker_noise_spectrum.png
+
+# 2. Run SystemVerilog simulation with DPI-C noise injection
+uv run python3 scripts/run_test.py --test ideal_amp_with_noise
+# Output: sim/waves/ideal_amp_with_noise.vcd
+
+# 3. Compare Python vs SystemVerilog statistically
+uv run python3 scripts/verify_noise_match.py
+# Output: flicker_noise_verification.png
+# Verification: RMS error < 10%, spectral slope ≈ -1 ± 0.2
+```
+
+**Key Implementation Details**:
+- **Different RNGs**: C `rand()` vs Python `random.uniform()` - samples differ but statistics match
+- **Stateful Design**: Static variables persist across DPI-C calls (NOT thread-safe)
+- **NOT Pure**: Function has side effects, do NOT declare as `pure` in SystemVerilog
+- **Empirical Calibration**: RAW_RMS adjusted to compensate for RNG differences
+- **Reset Skip**: Testbench collects 1044 samples (20 for reset skip + 1024 valid)
+- **VCD Parsing**: Skips first 10 samples (reset period) to align sample_counter values
+
+**Use Case**: Demonstrates how to model analog effects (noise, jitter) in digital simulation for SerDes/RF applications.
+
+### Running the DPI-C Examples
+
+**Sine Wave Example**:
+```bash
+# Run the DPI-C sine wave test
+uv run python3 scripts/run_test.py --test sine_wave_gen
+
+# View waveform in GTKWave
+uv run python3 scripts/run_test.py --test sine_wave_gen --view
+```
+
+**Expected output**:
+```
+*** PASSED: All DPI-C sine wave tests passed successfully ***
+  ✓ DPI-C function import works correctly
+  ✓ Real number (double) data passing is accurate
+  ✓ Math library integration is successful
+  ✓ Waveform generation meets specifications
+```
+
+**Flicker Noise Example**:
+```bash
+# Step 1: Generate Python reference
+uv run python3 scripts/generate_flicker_noise.py
+
+# Step 2: Run SystemVerilog simulation
+uv run python3 scripts/run_test.py --test ideal_amp_with_noise
+
+# Step 3: Verify statistical match
+uv run python3 scripts/verify_noise_match.py
+```
+
+**Expected output**:
+```
+======================================================================
+FINAL VERDICT
+======================================================================
+✓✓✓ ALL TESTS PASSED ✓✓✓
+Python and SystemVerilog implementations match statistically
+Both exhibit 1/f noise characteristics as expected
+======================================================================
+RMS Error: 0.05% (0.249876V vs 0.250000V)
+Spectral Slopes: Python=-1.155, SystemVerilog=-1.009
+```
+
+### DPI-C Tutorial
+
+For a comprehensive guide to DPI-C, see:
+- **English**: `dpi/README.md` - Complete tutorial covering:
+  - What is DPI-C and when to use it
+  - Basic concepts (import/export)
+  - Data type mapping (SystemVerilog ↔ C)
+  - Step-by-step walkthrough of sine wave example
+  - Verilator-specific considerations
+  - Common pitfalls and solutions
+  - Advanced topics (open arrays, context functions)
+  - FAQ
+
+- **日本語**: `dpi/README_ja.md` - 包括的な日本語チュートリアル
+
+### Adding DPI-C to Tests
+
+To add DPI-C functions to your tests, include in `tests/test_config.yaml`:
+
+```yaml
+- name: your_test
+  verilator_extra_flags:
+    - ../dpi/your_code.c  # C source file
+    - -LDFLAGS            # Linker flags
+    - -lm                 # Link math library (if needed)
+```
+
+### Key DPI-C Concepts
+
+**Import Statement** (SystemVerilog calls C):
+```systemverilog
+import "DPI-C" pure function real dpi_sin(input real x);
+
+real result = dpi_sin(3.14159 / 2.0);  // Returns ~1.0
+```
+
+**C Implementation**:
+```c
+#include <math.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+double dpi_sin(double x) {
+    return sin(x);
+}
+
+#ifdef __cplusplus
+}
+#endif
+```
+
+**Critical Requirements**:
+1. Use `extern "C"` in C code to prevent name mangling
+2. Match data types exactly (`real` ↔ `double`)
+3. Link required libraries (`-lm` for math functions)
+4. Mark truly pure functions as `pure` for optimization
+
+### Educational Value
+
+This example teaches:
+- ✅ DPI-C import syntax and usage
+- ✅ Real-world C library integration (math.h)
+- ✅ Data type mapping between languages
+- ✅ Verilator compilation with DPI-C files
+- ✅ Both RTL and testbench DPI-C patterns
+- ✅ Self-checking testbench techniques
+
+Perfect foundation for more complex DPI-C usage in SerDes models (e.g., analog behavioral models, complex algorithms).

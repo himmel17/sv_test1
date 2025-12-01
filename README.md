@@ -52,20 +52,31 @@ uv run python3 scripts/run_test.py --test counter --view  # 特定テストを�
 ├── rtl/                  # RTLソースコード（DUT）
 │   ├── counter.sv        # 8ビット同期カウンター
 │   ├── demux_4bit.sv     # 4ビット1:4デマルチプレクサ
+│   ├── sine_wave_gen.sv  # DPI-C正弦波ジェネレータ（教育用）
+│   ├── ideal_amp_with_noise.sv  # DPI-Cフリッカノイズアンプ（PoC）
 │   ├── tx/               # 送信側モジュール（サブディレクトリ例）
 │   └── rx/               # 受信側モジュール（サブディレクトリ例）
 ├── tb/                   # テストベンチ
 │   ├── counter_tb.sv     # カウンターテストベンチ
 │   ├── demux_4bit_tb.sv  # デマルチプレクサテストベンチ
+│   ├── sine_wave_gen_tb.sv  # 正弦波ジェネレータテストベンチ
+│   ├── ideal_amp_with_noise_tb.sv  # フリッカノイズテストベンチ
 │   ├── tx/               # 送信側テストベンチ（サブディレクトリ例）
 │   └── rx/               # 受信側テストベンチ（サブディレクトリ例）
+├── dpi/                  # DPI-C実装（SystemVerilog-C統合）
+│   ├── dpi_math.c        # 数学関数ラッパー（sin, cos）
+│   ├── dpi_flicker_noise.c  # フリッカノイズジェネレータ
+│   ├── README.md         # DPI-Cチュートリアル（英語）
+│   └── README_ja.md      # DPI-Cチュートリアル（日本語）
 ├── tests/                # テスト設定
 │   └── test_config.yaml  # テスト定義ファイル（YAML）
 ├── sim/                  # シミュレーション出力
 │   ├── obj_dir/          # Verilatorコンパイル成果物
 │   └── waves/            # VCD波形ファイル
 ├── scripts/              # テスト管理スクリプト
-│   └── run_test.py       # メインテスト実行スクリプト
+│   ├── run_test.py       # メインテスト実行スクリプト
+│   ├── generate_flicker_noise.py  # Pythonリファレンス実装
+│   └── verify_noise_match.py      # 統計検証スクリプト
 ├── pyproject.toml        # Python依存関係定義（推奨）
 ├── uv.lock               # 依存関係ロックファイル
 ├── requirements.txt      # Python依存関係 - 実行環境（後方互換性用）
@@ -249,6 +260,72 @@ python3 scripts/run_test.py --test counter --view
 1. 4つの選択値それぞれで4つのデータパターンをテスト（計16パターン）
 2. 選択された出力のみが非ゼロであることを確認
 3. 出力分離の検証（1つの出力のみアクティブ）
+
+## DPI-C サンプル
+
+このプロジェクトには、SystemVerilogとC言語の統合を実演する **DPI-C (Direct Programming Interface for C)** サンプルが含まれています。
+
+### sine_wave_gen（基礎DPI-C）
+
+**目的**: C言語の`sin()`関数を使用した基本的なDPI-C統合の教育用サンプル
+
+**ファイル**:
+- `dpi/dpi_math.c` - `math.h`の`sin()`, `cos()`ラッパー
+- `rtl/sine_wave_gen.sv` - DPI-Cを使用したパラメータ化正弦波ジェネレータ
+- `tb/sine_wave_gen_tb.sv` - DPI-C検証付きセルフチェックテストベンチ
+
+**実行方法**:
+```bash
+uv run python3 scripts/run_test.py --test sine_wave_gen
+```
+
+### ideal_amp_with_noise（高度DPI-C + 検証）
+
+**目的**: アナログノイズモデリングのためのステートフルDPI-C実装とPython検証のProof of Concept
+
+**ファイル**:
+- `scripts/generate_flicker_noise.py` - Pythonリファレンス実装（Voss-McCartney アルゴリズム）
+- `dpi/dpi_flicker_noise.c` - DPI-C用ステートフルC実装
+- `rtl/ideal_amp_with_noise.sv` - DPI-Cノイズ注入付き理想アンプ
+- `tb/ideal_amp_with_noise_tb.sv` - DC入力セルフチェックテストベンチ
+- `scripts/verify_noise_match.py` - 統計検証スクリプト（Python vs SystemVerilog）
+
+**特徴**:
+- ✅ **ステートフルDPI-C**: 呼び出し間で内部状態（ノイズソース、サンプルカウンタ）を保持
+- ✅ **1/fノイズ**: フリッカノイズ生成のためのVoss-McCARTNEYアルゴリズム実装
+- ✅ **Python プロトタイプ → C実装**: アルゴリズム検証ワークフロー
+- ✅ **統計的検証**: RMSとスペクトル傾きの比較（サンプル単位ではない）
+- ✅ **VCDベース解析**: シミュレーション波形からデータ抽出して検証
+- ✅ **スペクトル解析**: FFTベースのパワースペクトル密度検証
+- ✅ **リセット処理**: 解析からリセットトランジェントを適切に除外
+
+**検証ワークフロー**:
+```bash
+# ステップ1: Pythonリファレンス生成（1024サンプル、100MHzサンプリング）
+uv run python3 scripts/generate_flicker_noise.py
+# 出力: flicker_noise_reference.npy, flicker_noise_spectrum.png
+
+# ステップ2: DPI-Cノイズ注入付きSystemVerilogシミュレーション実行
+uv run python3 scripts/run_test.py --test ideal_amp_with_noise
+# 出力: sim/waves/ideal_amp_with_noise.vcd
+
+# ステップ3: PythonとSystemVerilogの統計的比較
+uv run python3 scripts/verify_noise_match.py
+# 出力: flicker_noise_verification.png
+# 検証: RMS誤差 < 10%, スペクトル傾き ≈ -1 ± 0.2
+```
+
+**実装の詳細**:
+- **異なる乱数生成器**: C `rand()` vs Python `random.uniform()` - サンプルは異なるが統計特性は一致
+- **ステートフル設計**: static変数がDPI-C呼び出し間で永続（スレッドセーフではない）
+- **Pure関数ではない**: 副作用があるため、SystemVerilogで`pure`宣言しない
+- **経験的較正**: RNG差を補償するためにRAW_RMS調整
+- **リセットスキップ**: テストベンチは1044サンプル収集（リセットスキップ20 + 有効1024）
+- **VCD解析**: 最初の10サンプル（リセット期間）をスキップしてsample_counter値を整列
+
+**用途**: SerDes/RFアプリケーションのデジタルシミュレーションでアナログ効果（ノイズ、ジッタ）をモデル化する方法を実演
+
+詳細は `dpi/README.md`（英語）または `dpi/README_ja.md`（日本語）の包括的なDPI-Cチュートリアルを参照してください。
 
 ## テスト設定ファイル（YAML）
 

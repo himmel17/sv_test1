@@ -5,7 +5,11 @@ description = "SystemVerilog SerDes Test Environment with Verilator and GTKWave"
 readme = "README.md"
 requires-python = ">=3.12.11"
 dependencies = [
+    "matplotlib>=3.10.7",
+    "numpy>=2.3.5",
     "pyyaml>=6.0",
+    "scipy>=1.16.3",
+    "vcdvcd>=2.6.0",
 ]
 
 [dependency-groups]
