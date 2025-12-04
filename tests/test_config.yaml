@@ -100,6 +100,18 @@ tests:
       - ../dpi/dpi_flicker_noise.c  # DPI-C flicker noise generator
     sim_timeout: "15us"  # Simulation timeout (1024 samples @ 100MHz = 10.24us + margin)
 
+  # Ideal amplifier with flicker noise - BATCH MODE (Method 2 PoC)
+  - name: ideal_amp_with_noise_batch
+    enabled: true
+    description: "Batch flicker noise: 4096 samples pre-loaded from Python binary (Method 2)"
+    top_module: ideal_amp_with_noise_batch_tb
+    testbench_file: ideal_amp_with_noise_batch_tb.sv
+    rtl_files:
+      - ideal_amp_with_noise.sv  # Reuse streaming RTL
+    verilator_extra_flags:
+      - ../dpi/dpi_flicker_noise_batch.c  # Batch DPI-C implementation
+    sim_timeout: "50us"  # 4096 samples @ 100MHz = 40.96us + margin
+
   # SerDes Transmitter (template - uncomment when ready)
   # - name: serdes_tx
   #   enabled: true

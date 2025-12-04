@@ -548,11 +548,11 @@ DPI-C enables:
 - Deterministic (fixed seed) for reproducibility
 - Target RMS: 0.25V with empirical calibration (RAW_RMS=1.757)
 
-**Verification Workflow**:
+**Verification Workflow (Streaming Mode - Method 1)**:
 ```bash
 # 1. Generate Python reference (1024 samples, 100MHz sampling)
 uv run python3 scripts/generate_flicker_noise.py
-# Output: flicker_noise_reference.npy, flicker_noise_spectrum.png
+# Output: scripts/flicker_noise_reference.npy, scripts/flicker_noise_spectrum.png
 
 # 2. Run SystemVerilog simulation with DPI-C noise injection
 uv run python3 scripts/run_test.py --test ideal_amp_with_noise
@@ -560,8 +560,44 @@ uv run python3 scripts/run_test.py --test ideal_amp_with_noise
 
 # 3. Compare Python vs SystemVerilog statistically
 uv run python3 scripts/verify_noise_match.py
-# Output: flicker_noise_verification.png
+# Output: scripts/flicker_noise_verification.png
 # Verification: RMS error < 10%, spectral slope ≈ -1 ± 0.2
+```
+
+**Batch Mode (Method 2) - Exact Sample Matching**:
+
+For exact sample-by-sample verification, use the batch mode implementation:
+
+**Files**:
+- `scripts/generate_flicker_noise_batch.py` - Python generator with binary file output
+- `dpi/dpi_flicker_noise_batch.c` - DPI-C implementation loading pre-generated samples
+- `tb/ideal_amp_with_noise_batch_tb.sv` - Batch testbench (4096 samples)
+- `scripts/verify_noise_match_batch.py` - Exact matching verification with detailed log
+
+**Key Differences from Streaming**:
+- Sample count: 4096 (vs 1024 for streaming)
+- DPI-C: Pre-loaded from binary file (vs on-the-fly generation)
+- Verification: Exact sample-by-sample (vs statistical only)
+- Tolerance: 1 nanovolt (vs 10% RMS)
+- Output: Detailed log file with sample-by-sample comparison
+
+**Verification Workflow (Batch Mode)**:
+```bash
+# 1. Generate Python reference and binary file
+uv run python3 scripts/generate_flicker_noise_batch.py
+# Output: scripts/flicker_noise_batch_reference.npy
+#         scripts/flicker_noise_batch_spectrum.png
+#         dpi/flicker_noise_batch.bin (32 KB for DPI-C)
+
+# 2. Run SystemVerilog simulation
+uv run python3 scripts/run_test.py --test ideal_amp_with_noise_batch
+# Output: sim/waves/ideal_amp_with_noise_batch.vcd
+
+# 3. Verify exact match
+uv run python3 scripts/verify_noise_match_batch.py
+# Output: scripts/flicker_noise_batch_verification.png
+#         scripts/flicker_noise_batch_verification.log (detailed comparison)
+# Verification: 100% exact match (4096/4096 samples, max error ~1e-15 V)
 ```
 
 **Key Implementation Details**:

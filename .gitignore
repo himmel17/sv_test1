@@ -26,3 +26,6 @@ Thumbs.db
 
 # Log files
 *.log
+
+# .png files for debug
+scripts/*.png

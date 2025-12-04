@@ -393,8 +393,10 @@ rtl/
 tb/
   ideal_amp_with_noise_tb.sv ← セルフチェックテストベンチ（DC入力）
 scripts/
-  generate_flicker_noise.py  ← Pythonリファレンス実装
-  verify_noise_match.py      ← 統計検証（Python vs SV）
+  generate_flicker_noise.py  ← Pythonリファレンス実装（ストリーミング版）
+  generate_flicker_noise_batch.py ← Pythonリファレンス実装（バッチ版）
+  verify_noise_match.py      ← 統計検証（ストリーミング版）
+  verify_noise_match_batch.py ← 厳密一致検証（バッチ版）
 ```
 
 ### アルゴリズム：Voss-McCartney 1/fノイズ
@@ -514,13 +516,13 @@ module ideal_amp_with_noise #(
 endmodule
 ```
 
-### 検証ワークフロー
+### 検証ワークフロー（ストリーミング版 - Method 1）
 
 **ステップ1：Pythonリファレンス生成**
 ```bash
 uv run python3 scripts/generate_flicker_noise.py
-# 出力: flicker_noise_reference.npy（1024サンプル）
-#       flicker_noise_spectrum.png（スペクトルプロット）
+# 出力: scripts/flicker_noise_reference.npy（1024サンプル）
+#       scripts/flicker_noise_spectrum.png（スペクトルプロット）
 ```
 
 **ステップ2：SystemVerilogシミュレーション実行**
@@ -535,7 +537,7 @@ uv run python3 scripts/run_test.py --test ideal_amp_with_noise
 uv run python3 scripts/verify_noise_match.py
 # VCDからノイズ抽出：amp_out - amp_out_ideal
 # Pythonリファレンスと RMS およびスペクトル傾きを比較
-# 出力: flicker_noise_verification.png
+# 出力: scripts/flicker_noise_verification.png
 ```
 
 **期待される結果：**
@@ -550,6 +552,54 @@ Both exhibit 1/f noise characteristics as expected
 RMS Error: 0.05% (0.249876V vs 0.250000V)
 Spectral Slopes: Python=-1.155, SystemVerilog=-1.009 (期待値: -1.0 ± 0.2)
 ```
+
+### 検証ワークフロー（バッチ版 - Method 2）
+
+**厳密なサンプル単位の一致**が必要な場合は、バッチ版実装を使用します：
+
+**ステップ1：Pythonリファレンスとバイナリ生成**
+```bash
+uv run python3 scripts/generate_flicker_noise_batch.py
+# 出力: scripts/flicker_noise_batch_reference.npy（4096サンプル）
+#       scripts/flicker_noise_batch_spectrum.png（スペクトルプロット）
+#       dpi/flicker_noise_batch.bin（DPI-C用32 KBバイナリ）
+```
+
+**ステップ2：SystemVerilogシミュレーション実行（バッチ）**
+```bash
+uv run python3 scripts/run_test.py --test ideal_amp_with_noise_batch
+# 出力: sim/waves/ideal_amp_with_noise_batch.vcd
+# DPI-Cはバイナリファイルから事前生成されたサンプルをロード
+```
+
+**ステップ3：厳密一致検証**
+```bash
+uv run python3 scripts/verify_noise_match_batch.py
+# 1ナノボルト許容誤差でのサンプル単位比較
+# 出力: scripts/flicker_noise_batch_verification.png
+#       scripts/flicker_noise_batch_verification.log（詳細ログ）
+```
+
+**期待される結果：**
+```
+======================================================================
+FINAL VERDICT - BATCH MODE
+======================================================================
+✓✓✓ ALL TESTS PASSED ✓✓✓
+Python and SystemVerilog implementations match EXACTLY
+All samples within epsilon tolerance (1 nanovolt)
+======================================================================
+Sample Match: 100.00% (4096/4096)
+Max Error: 1.332e-15 V（浮動小数点精度限界）
+Mean Error: 2.997e-16 V
+```
+
+**バッチ版の特徴：**
+- サンプル数：4096（ストリーミング版は1024）
+- 検証：サンプル単位で厳密一致（ストリーミング版は統計的比較のみ）
+- 許容誤差：1ナノボルト（ストリーミング版は10% RMS）
+- DPI-C：バイナリファイルから事前ロード（ストリーミング版はリアルタイム生成）
+- 出力：サンプル単位比較の詳細ログファイル
 
 ### 正弦波サンプルとの主な違い
 

@@ -136,13 +136,15 @@ def main():
     print("Flicker Noise Verification: Python vs SystemVerilog DPI-C")
     print("=" * 70)
 
-    # Load Python reference
-    if not Path('flicker_noise_reference.npy').exists():
-        print("ERROR: Run scripts/generate_flicker_noise.py first!")
+    # Load Python reference (from scripts/ directory)
+    ref_path = 'scripts/flicker_noise_reference.npy'
+    if not Path(ref_path).exists():
+        print(f"ERROR: {ref_path} not found!")
+        print("Run: uv run python3 scripts/generate_flicker_noise.py")
         return 1
 
-    noise_python = np.load('flicker_noise_reference.npy')
-    print(f"[INFO] Loaded Python reference: {len(noise_python)} samples")
+    noise_python = np.load(ref_path)
+    print(f"[INFO] Loaded Python reference: {len(noise_python)} samples from {ref_path}")
 
     # Load SystemVerilog from VCD
     vcd_path = 'sim/waves/ideal_amp_with_noise.vcd'
@@ -253,9 +255,10 @@ def main():
     axes[1, 1].grid(True, alpha=0.3)
 
     plt.tight_layout()
-    plt.savefig('flicker_noise_verification.png', dpi=150)
+    plot_path = 'scripts/flicker_noise_verification.png'
+    plt.savefig(plot_path, dpi=150)
     plt.close()
-    print(f"      Verification plot saved: flicker_noise_verification.png")
+    print(f"      Verification plot saved: {plot_path}")
 
     # Final verdict
     print("\n[5/5] Final verdict...")

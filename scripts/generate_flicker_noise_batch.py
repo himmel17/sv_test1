@@ -1,16 +1,17 @@
 #!/usr/bin/env python3
 """
-Flicker (1/f) Noise Generator - Python Reference Implementation
+Flicker (1/f) Noise Generator - Batch Mode (Method 2)
 
-Generates flicker noise using the Voss-McCartney algorithm and verifies
-the 1/f spectral characteristic through FFT analysis.
+Generates 4096 flicker noise samples using the Voss-McCartney algorithm and saves
+them to a binary file for DPI-C loading. This implements Method 2 from
+dpi/batch_implementation_notes.md.
 
-This reference implementation is used to:
-1. Develop and verify the noise generation algorithm
-2. Generate reference data for comparison with SystemVerilog DPI-C implementation
-3. Produce spectrum plots showing 1/f characteristic
+Key Differences from Streaming Version (generate_flicker_noise.py):
+- Sample count: 4096 (vs 1024 for streaming)
+- Output: Binary file (dpi/flicker_noise_batch.bin) for DPI-C loading
+- Purpose: Exact sample-by-sample matching with SystemVerilog
 
-Author: Generated for SerDes flicker noise PoC
+Author: Generated for SerDes flicker noise PoC - Batch Mode
 """
 
 import random
@@ -22,7 +23,7 @@ from pathlib import Path
 N_SOURCES = 10          # Number of noise sources (covers ~100kHz to 50MHz range)
 SEED = 42               # Fixed seed for deterministic generation
 TARGET_RMS = 0.25       # Target noise RMS (±5% of 5V output)
-SAMPLES = 1024          # Power of 2 for efficient FFT
+SAMPLES = 4096          # Changed from 1024 - larger for batch mode demonstration
 SAMPLE_RATE = 100e6     # 100 MHz sampling rate
 
 
@@ -77,7 +78,7 @@ def voss_mccartney_noise(n_samples, n_sources=10, seed=42):
     return noise
 
 
-def analyze_spectrum(noise, sample_rate, save_path='scripts/flicker_noise_spectrum.png'):
+def analyze_spectrum(noise, sample_rate, save_path='flicker_noise_batch_spectrum.png'):
     """
     Compute and plot power spectral density showing 1/f characteristic.
 
@@ -129,7 +130,7 @@ def analyze_spectrum(noise, sample_rate, save_path='scripts/flicker_noise_spectr
 
     plt.xlabel('Frequency (Hz)', fontsize=12)
     plt.ylabel('Power Spectral Density', fontsize=12)
-    plt.title(f'Flicker Noise Spectrum - Voss-McCartney Algorithm\n'
+    plt.title(f'Flicker Noise Spectrum (Batch Mode) - Voss-McCartney Algorithm\n'
               f'N={N_SOURCES} sources, {SAMPLES} samples @ {sample_rate/1e6:.0f} MHz',
               fontsize=14)
     plt.grid(True, which='both', alpha=0.3)
@@ -172,18 +173,52 @@ def compute_raw_rms(n_samples, n_sources, seed):
     return raw_rms
 
 
+def save_binary(noise, filepath='dpi/flicker_noise_batch.bin'):
+    """
+    Save noise samples to binary file for DPI-C loading (Method 2).
+
+    Binary Format:
+    - Data type: IEEE 754 double precision (float64)
+    - Byte order: Native (little-endian on x86/ARM)
+    - Size: N samples × 8 bytes/sample
+    - No header, just raw double array
+
+    Args:
+        noise: Noise samples (numpy array)
+        filepath: Output binary file path
+
+    Returns:
+        int: Number of bytes written
+    """
+    # Convert to Path object for easier file size retrieval
+    filepath = Path(filepath)
+
+    # Save as binary (IEEE 754 double precision)
+    noise.astype(np.float64).tofile(str(filepath))
+
+    # Get file size
+    file_size = filepath.stat().st_size
+
+    print(f"      Binary saved: {filepath}")
+    print(f"      File size: {file_size:,} bytes ({file_size/1024:.1f} KB)")
+    print(f"      Format: IEEE 754 double precision (8 bytes/sample)")
+
+    return file_size
+
+
 def main():
     """Main execution: generate noise, analyze spectrum, save reference data."""
     print("=" * 70)
-    print("Flicker Noise Generation - Python Reference Implementation")
+    print("Flicker Noise Generation - Batch Mode (Method 2)")
     print("=" * 70)
     print(f"Algorithm: Voss-McCartney")
     print(f"Parameters:")
     print(f"  N_SOURCES    : {N_SOURCES}")
     print(f"  SEED         : {SEED}")
     print(f"  TARGET_RMS   : {TARGET_RMS}")
-    print(f"  SAMPLES      : {SAMPLES}")
+    print(f"  SAMPLES      : {SAMPLES} (4x larger than streaming)")
     print(f"  SAMPLE_RATE  : {SAMPLE_RATE/1e6:.0f} MHz")
+    print(f"  Sim Time     : {SAMPLES/(SAMPLE_RATE/1e6):.2f} us")
     print("=" * 70)
 
     # Compute raw RMS for C implementation reference
@@ -192,7 +227,7 @@ def main():
     print(f"       Use this value in C code: raw_rms = {raw_rms:.4f}")
 
     # Generate noise
-    print(f"\n[1/4] Generating {SAMPLES} noise samples...")
+    print(f"\n[1/5] Generating {SAMPLES} noise samples...")
     noise = voss_mccartney_noise(SAMPLES, N_SOURCES, SEED)
 
     # Compute statistics
@@ -200,15 +235,15 @@ def main():
     peak_to_peak = np.max(noise) - np.min(noise)
     mean_val = np.mean(noise)
 
-    print(f"[2/4] Computing statistics...")
+    print(f"[2/5] Computing statistics...")
     print(f"      Mean         : {mean_val:.6f} (should be ~0)")
     print(f"      RMS          : {rms:.6f} (target: {TARGET_RMS:.6f})")
     print(f"      Peak-to-peak : {peak_to_peak:.6f}")
     print(f"      Min/Max      : {np.min(noise):.6f} / {np.max(noise):.6f}")
 
     # Analyze spectrum
-    print(f"[3/4] Analyzing spectrum...")
-    freqs, psd, slope = analyze_spectrum(noise, SAMPLE_RATE)
+    print(f"[3/5] Analyzing spectrum...")
+    freqs, psd, slope = analyze_spectrum(noise, SAMPLE_RATE, save_path='scripts/flicker_noise_batch_spectrum.png')
     print(f"      Spectral slope: {slope:.3f} (target: -1.0 for 1/f)")
     print(f"      Frequency range: {freqs[0]/1e3:.1f} kHz to {freqs[-1]/1e6:.1f} MHz")
 
@@ -219,11 +254,26 @@ def main():
         print(f"      ✗ WARNING: Slope deviates from expected 1/f")
         slope_pass = False
 
-    # Save reference data (in scripts/ directory)
-    print(f"[4/4] Saving reference data...")
-    np.save('scripts/flicker_noise_reference.npy', noise)
-    print(f"      Reference data saved: scripts/flicker_noise_reference.npy")
-    print(f"      Spectrum plot saved: scripts/flicker_noise_spectrum.png")
+    # Save reference data
+    print(f"[4/5] Saving reference data...")
+
+    # Save NumPy array for Python verification (in scripts/ directory)
+    np.save('scripts/flicker_noise_batch_reference.npy', noise)
+    print(f"      NumPy reference saved: scripts/flicker_noise_batch_reference.npy")
+
+    # Save spectrum plot (already saved in scripts/ directory by analyze_spectrum)
+    print(f"      Spectrum plot saved: scripts/flicker_noise_batch_spectrum.png")
+
+    # Save binary for DPI-C loading (Method 2)
+    print(f"[5/5] Saving binary for DPI-C (Method 2)...")
+    binary_size = save_binary(noise, 'dpi/flicker_noise_batch.bin')
+
+    # Verify binary size
+    expected_size = SAMPLES * 8  # 8 bytes per double
+    if binary_size == expected_size:
+        print(f"      ✓ Binary size correct: {binary_size} == {expected_size}")
+    else:
+        print(f"      ✗ WARNING: Binary size mismatch: {binary_size} != {expected_size}")
 
     # Final summary
     print("\n" + "=" * 70)
@@ -231,7 +281,19 @@ def main():
     print("=" * 70)
     print(f"RMS Error        : {abs(rms - TARGET_RMS)/TARGET_RMS * 100:.2f}%")
     print(f"Spectral Slope   : {slope:.3f}")
+    print(f"Binary File      : dpi/flicker_noise_batch.bin ({binary_size:,} bytes)")
     print(f"Status           : {'PASS' if slope_pass else 'WARNING'}")
+    print("=" * 70)
+    print("")
+    print("Next Steps:")
+    print("  1. Run simulation:")
+    print("     uv run python3 scripts/run_test.py --test ideal_amp_with_noise_batch")
+    print("  2. Verify exact match:")
+    print("     uv run python3 scripts/verify_noise_match_batch.py")
+    print("  3. Check output files:")
+    print("     - Reference: scripts/flicker_noise_batch_reference.npy")
+    print("     - Spectrum:  scripts/flicker_noise_batch_spectrum.png")
+    print("     - Log file:  scripts/flicker_noise_batch_verification.log")
     print("=" * 70)
 
     return 0 if slope_pass else 1

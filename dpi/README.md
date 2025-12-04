@@ -393,8 +393,10 @@ rtl/
 tb/
   ideal_amp_with_noise_tb.sv ← Self-checking testbench (DC input)
 scripts/
-  generate_flicker_noise.py  ← Python reference implementation
-  verify_noise_match.py      ← Statistical verification (Python vs SV)
+  generate_flicker_noise.py  ← Python reference (streaming mode)
+  generate_flicker_noise_batch.py ← Python reference (batch mode)
+  verify_noise_match.py      ← Statistical verification (streaming)
+  verify_noise_match_batch.py ← Exact matching verification (batch)
 ```
 
 ### Algorithm: Voss-McCartney 1/f Noise
@@ -514,13 +516,13 @@ module ideal_amp_with_noise #(
 endmodule
 ```
 
-### Verification Workflow
+### Verification Workflow (Streaming Mode - Method 1)
 
 **Step 1: Generate Python Reference**
 ```bash
 uv run python3 scripts/generate_flicker_noise.py
-# Outputs: flicker_noise_reference.npy (1024 samples)
-#          flicker_noise_spectrum.png (spectral plot)
+# Outputs: scripts/flicker_noise_reference.npy (1024 samples)
+#          scripts/flicker_noise_spectrum.png (spectral plot)
 ```
 
 **Step 2: Run SystemVerilog Simulation**
@@ -535,7 +537,7 @@ uv run python3 scripts/run_test.py --test ideal_amp_with_noise
 uv run python3 scripts/verify_noise_match.py
 # Extracts noise from VCD: amp_out - amp_out_ideal
 # Compares RMS and spectral slope with Python reference
-# Outputs: flicker_noise_verification.png
+# Outputs: scripts/flicker_noise_verification.png
 ```
 
 **Expected Results:**
@@ -550,6 +552,54 @@ Both exhibit 1/f noise characteristics as expected
 RMS Error: 0.05% (0.249876V vs 0.250000V)
 Spectral Slopes: Python=-1.155, SystemVerilog=-1.009 (expected: -1.0 ± 0.2)
 ```
+
+### Verification Workflow (Batch Mode - Method 2)
+
+For **exact sample-by-sample matching**, use the batch mode implementation:
+
+**Step 1: Generate Python Reference and Binary**
+```bash
+uv run python3 scripts/generate_flicker_noise_batch.py
+# Outputs: scripts/flicker_noise_batch_reference.npy (4096 samples)
+#          scripts/flicker_noise_batch_spectrum.png (spectral plot)
+#          dpi/flicker_noise_batch.bin (32 KB binary for DPI-C)
+```
+
+**Step 2: Run SystemVerilog Simulation (Batch)**
+```bash
+uv run python3 scripts/run_test.py --test ideal_amp_with_noise_batch
+# Outputs: sim/waves/ideal_amp_with_noise_batch.vcd
+# DPI-C loads pre-generated samples from binary file
+```
+
+**Step 3: Exact Matching Verification**
+```bash
+uv run python3 scripts/verify_noise_match_batch.py
+# Sample-by-sample comparison with 1 nanovolt tolerance
+# Outputs: scripts/flicker_noise_batch_verification.png
+#          scripts/flicker_noise_batch_verification.log (detailed log)
+```
+
+**Expected Results:**
+```
+======================================================================
+FINAL VERDICT - BATCH MODE
+======================================================================
+✓✓✓ ALL TESTS PASSED ✓✓✓
+Python and SystemVerilog implementations match EXACTLY
+All samples within epsilon tolerance (1 nanovolt)
+======================================================================
+Sample Match: 100.00% (4096/4096)
+Max Error: 1.332e-15 V (floating point precision limit)
+Mean Error: 2.997e-16 V
+```
+
+**Batch Mode Features:**
+- Sample count: 4096 (vs 1024 for streaming)
+- Verification: Exact sample-by-sample (vs statistical only)
+- Tolerance: 1 nanovolt (vs 10% RMS)
+- DPI-C: Pre-loaded from binary file (vs on-the-fly generation)
+- Output: Detailed log file with sample-by-sample comparison
 
 ### Key Differences from Sine Wave Example
 

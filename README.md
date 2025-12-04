@@ -65,7 +65,9 @@ uv run python3 scripts/run_test.py --test counter --view  # 特定テストを�
 │   └── rx/               # 受信側テストベンチ（サブディレクトリ例）
 ├── dpi/                  # DPI-C実装（SystemVerilog-C統合）
 │   ├── dpi_math.c        # 数学関数ラッパー（sin, cos）
-│   ├── dpi_flicker_noise.c  # フリッカノイズジェネレータ
+│   ├── dpi_flicker_noise.c  # フリッカノイズジェネレータ（ストリーミング版）
+│   ├── dpi_flicker_noise_batch.c  # フリッカノイズジェネレータ（バッチ版）
+│   ├── flicker_noise_batch.bin    # バイナリデータ（バッチ版用、生成される）
 │   ├── README.md         # DPI-Cチュートリアル（英語）
 │   └── README_ja.md      # DPI-Cチュートリアル（日本語）
 ├── tests/                # テスト設定
@@ -75,8 +77,11 @@ uv run python3 scripts/run_test.py --test counter --view  # 特定テストを�
 │   └── waves/            # VCD波形ファイル
 ├── scripts/              # テスト管理スクリプト
 │   ├── run_test.py       # メインテスト実行スクリプト
-│   ├── generate_flicker_noise.py  # Pythonリファレンス実装
-│   └── verify_noise_match.py      # 統計検証スクリプト
+│   ├── generate_flicker_noise.py  # Pythonリファレンス実装（ストリーミング版）
+│   ├── generate_flicker_noise_batch.py  # Pythonリファレンス実装（バッチ版）
+│   ├── verify_noise_match.py      # 統計検証スクリプト（ストリーミング版）
+│   ├── verify_noise_match_batch.py  # 厳密一致検証スクリプト（バッチ版）
+│   └── flicker_noise_*.{npy,png,log}  # 生成される検証データ（scripts/内）
 ├── pyproject.toml        # Python依存関係定義（推奨）
 ├── uv.lock               # 依存関係ロックファイル
 ├── requirements.txt      # Python依存関係 - 実行環境（後方互換性用）
@@ -299,11 +304,11 @@ uv run python3 scripts/run_test.py --test sine_wave_gen
 - ✅ **スペクトル解析**: FFTベースのパワースペクトル密度検証
 - ✅ **リセット処理**: 解析からリセットトランジェントを適切に除外
 
-**検証ワークフロー**:
+**検証ワークフロー（ストリーミング版 - Method 1）**:
 ```bash
 # ステップ1: Pythonリファレンス生成（1024サンプル、100MHzサンプリング）
 uv run python3 scripts/generate_flicker_noise.py
-# 出力: flicker_noise_reference.npy, flicker_noise_spectrum.png
+# 出力: scripts/flicker_noise_reference.npy, scripts/flicker_noise_spectrum.png
 
 # ステップ2: DPI-Cノイズ注入付きSystemVerilogシミュレーション実行
 uv run python3 scripts/run_test.py --test ideal_amp_with_noise
@@ -311,9 +316,38 @@ uv run python3 scripts/run_test.py --test ideal_amp_with_noise
 
 # ステップ3: PythonとSystemVerilogの統計的比較
 uv run python3 scripts/verify_noise_match.py
-# 出力: flicker_noise_verification.png
+# 出力: scripts/flicker_noise_verification.png
 # 検証: RMS誤差 < 10%, スペクトル傾き ≈ -1 ± 0.2
 ```
+
+**検証ワークフロー（バッチ版 - Method 2）**:
+
+厳密なサンプル単位の一致検証が必要な場合は、バッチ版を使用します：
+
+```bash
+# ステップ1: Pythonリファレンスとバイナリファイル生成（4096サンプル）
+uv run python3 scripts/generate_flicker_noise_batch.py
+# 出力: scripts/flicker_noise_batch_reference.npy
+#       scripts/flicker_noise_batch_spectrum.png
+#       dpi/flicker_noise_batch.bin (32 KB DPI-C用)
+
+# ステップ2: SystemVerilogシミュレーション実行
+uv run python3 scripts/run_test.py --test ideal_amp_with_noise_batch
+# 出力: sim/waves/ideal_amp_with_noise_batch.vcd
+
+# ステップ3: 厳密一致検証
+uv run python3 scripts/verify_noise_match_batch.py
+# 出力: scripts/flicker_noise_batch_verification.png
+#       scripts/flicker_noise_batch_verification.log (詳細ログ)
+# 検証: 100%厳密一致（4096/4096サンプル、最大誤差 ~1e-15 V）
+```
+
+**バッチ版の特徴**:
+- サンプル数: 4096（ストリーミング版は1024）
+- DPI-C: 事前生成されたバイナリファイルをロード（ストリーミング版はリアルタイム生成）
+- 検証: サンプル単位で厳密一致（ストリーミング版は統計的比較のみ）
+- 許容誤差: 1ナノボルト（ストリーミング版は10% RMS）
+- 出力: サンプル詳細ログファイルを含む
 
 **実装の詳細**:
 
