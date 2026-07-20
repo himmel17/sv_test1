@@ -1,7 +1,7 @@
 # CTLE (Continuous-Time Linear Equalizer) Specification
 
-**Document Version**: 1.0
-**Last Updated**: 2025-01-11
+**Document Version**: 1.1
+**Last Updated**: 2026-07-20
 **Target**: High-Speed SerDes (10-25 Gbps) for PCIe Gen3/4/5
 **Modeling Approach**: SystemVerilog Real Number Modeling (RNM)
 
@@ -287,25 +287,53 @@ signal_in → [First-order section] → intermediate → [Pole section] → sign
 
 ## 5. Frequency Response Verification
 
-### 5.1 Bode Plot Generation
+### 5.1 Verification Strategy (Layered)
 
-**Objective**: Verify magnitude and phase response match theory.
+The CTLE model is a discrete-time LTI IIR filter. Implementation correctness and specification conformance are therefore verified in **separate layers**, so that any failure can be attributed unambiguously:
 
-**Procedure**:
-1. Stimulate CTLE with sinusoidal inputs at multiple frequencies: 100 MHz, 500 MHz, 1 GHz, 2 GHz, 5 GHz, 10 GHz, 15 GHz
-2. For each frequency `f`:
-   - Apply `signal_in = A × sin(2π × f × t)`, where A = 0.1 V
-   - Measure steady-state output amplitude `B`
-   - Calculate gain: `Gain(dB) = 20 × log10(B / A)`
-3. Plot gain vs. frequency (Bode magnitude plot)
-4. Compare with theoretical `|H(jω)|`
+| Layer | What It Verifies | Method | Runs On |
+|-------|------------------|--------|---------|
+| 1. Coefficient check | Coefficient calculation (b0, b1, a1, c0, a2) | Export coefficients via debug hooks (Section 7.4), compare with Python reference (`scipy.signal.bilinear`) | SV sim + Python |
+| 2. Sample-exact match | Difference equation implemented exactly as intended | Apply an impulse input, compare **every output sample** with `scipy.signal.lfilter` | SV sim + Python |
+| 3. Discretization conformance | H(z) adequately approximates analog H(s) | Pure Python analysis: `scipy.signal.freqz` of H(z) vs. theoretical \|H(jω)\| | Python only |
+| 4. Self-checking smoke test | End-to-end sanity with framework pass/fail | Sine sweep at 3-5 frequencies with lock-in detection, compared against **H(z)** | SV testbench |
 
-**Pass Criteria**:
-- Measured gain within ±1 dB of theoretical at all frequencies
-- Peaking frequency within ±10% of expected
-- Peaking magnitude within ±2 dB
+**Rationale**:
+- Layers 1-2 establish that the SystemVerilog implementation equals the intended difference equation (sample-exact, reusing the `scripts/verify_noise_match_batch.py` workflow).
+- Layer 3 judges the bilinear discretization against the analog specification **without any additional SystemVerilog simulation**.
+- Layer 4 exists because the test framework requires a self-contained, self-checking testbench. It is a smoke test, not the primary conformance check.
 
-### 5.2 Key Frequency Points
+### 5.2 Theoretical Reference: H(z), Not H(s)
+
+Simulation output must be compared against the **discrete-time** transfer function actually implemented:
+
+```
+H_ref(f) = H(z) evaluated at z = exp(j·2π·f·T),   T = 1 / UPDATE_RATE
+```
+
+The bilinear transform warps frequencies as `ω_analog = (2/T) × tan(ω·T/2)`. With T = 1 ps the warping error is below 0.1% up to 15 GHz — negligible against a ±1 dB tolerance — but using H(z) as the reference cleanly separates "implementation bug" (Layers 1-2) from "discretization error" (Layer 3).
+
+### 5.3 Gain/Phase Measurement: Lock-in Detection (Layer 4)
+
+Peak-picking on discrete output samples is sensitive to residual transients and to the sampling grid. Use **lock-in detection (single-bin DFT)** instead:
+
+1. Apply differential sine `signal_diff = A × sin(2π × f × t)`, A = 0.1 V
+2. Discard the settling interval (slowest time constant ≈ 1/(2π × 1 GHz) ≈ 160 ps; discarding 5 cycles + 2 ns is more than sufficient)
+3. Over an **integer number of cycles** (≥ 20), accumulate:
+   - `I = Σ y[n] × sin(2π·f·t_n)`
+   - `Q = Σ y[n] × cos(2π·f·t_n)`
+4. Amplitude `B = (2/N) × √(I² + Q²)`, phase `φ = atan2(Q, I)`
+5. `Gain(dB) = 20 × log10(B / A)`
+
+Phase and group delay come at no extra cost — record them as informational data.
+
+**Test frequency placement**: Log-spaced points clustered around fz, fpeak ≈ √(fz × fp1), fp1, and fp2 (where the response slope is steepest) are more informative than an evenly spread fixed list. For the Layer 4 smoke test, 3-5 points are sufficient (e.g., 0.5 GHz, 3 GHz, 10 GHz).
+
+**Pass Criteria (Layer 4)**:
+- Measured gain within ±1 dB of the H(z) reference at all smoke-test frequencies
+- (Peaking frequency/magnitude conformance is judged in Layer 3 — see Section 6.2.3)
+
+### 5.4 Key Frequency Points
 
 For typical CTLE (fz = 1 GHz, fp1 = 5 GHz, fp2 = 10 GHz, G = 1.0):
 
@@ -336,13 +364,48 @@ For typical CTLE (fz = 1 GHz, fp1 = 5 GHz, fp2 = 10 GHz, G = 1.0):
 
 **Pass Criteria**: Output within ±2% of expected.
 
-### 6.2 Unit Test: Frequency Sweep (Bode Plot)
+### 6.2 Unit Test: Frequency Response (Layered Verification)
 
-**Objective**: Validate complete frequency response.
+**Objective**: Validate the complete frequency response using the layered strategy of Section 5.1.
 
-**Procedure**: (See section 5.1)
+#### 6.2.1 Layer 1: Coefficient Verification
 
-**Pass Criteria**: All frequency points within tolerance.
+**Procedure**:
+1. Run simulation with default parameters; dump b0, b1, a1, c0, a2 via debug hooks (Section 7.4)
+2. Compute reference coefficients in Python (`scipy.signal.bilinear`)
+3. Compare
+
+**Pass Criteria**: All coefficients match within 1e-12 relative error.
+
+#### 6.2.2 Layer 2: Impulse-Response Sample-Exact Match
+
+**Procedure**:
+1. Apply a single-sample differential impulse (e.g., 0.2 V for one UPDATE_RATE period, 0 V elsewhere)
+2. Capture ≥ 2048 output samples from the VCD
+3. Run the identical input through `scipy.signal.lfilter` with the reference coefficients
+4. Compare sample-by-sample (workflow follows `scripts/verify_noise_match_batch.py`)
+
+**Pass Criteria**: Maximum absolute error < 1e-12 V (floating-point rounding only).
+
+#### 6.2.3 Layer 3: Discretization Conformance (Python Only)
+
+**Procedure**:
+1. Evaluate H(z) with `scipy.signal.freqz` at log-spaced frequencies from 100 MHz to 15 GHz
+2. Compare against theoretical |H(jω)| (Section 3.2.1); generate a Bode plot for documentation
+
+**Pass Criteria**:
+- |H(z)| within ±1 dB of |H(jω)| from 100 MHz to 15 GHz
+- Peaking frequency within ±10% of expected, peaking magnitude within ±2 dB
+
+No SystemVerilog simulation is required for this layer.
+
+#### 6.2.4 Layer 4: Sine-Sweep Smoke Test (Self-Checking Testbench)
+
+**Procedure**:
+1. In the testbench, measure gain at 3-5 frequencies (e.g., 0.5, 3, 10 GHz) using lock-in detection (Section 5.3)
+2. Compare against precomputed H(z) reference values
+
+**Pass Criteria**: Within ±1 dB at all smoke-test frequencies; the testbench reports `*** PASSED ***` / `*** FAILED ***`.
 
 ### 6.3 Unit Test: Peaking Control
 
@@ -358,6 +421,8 @@ For typical CTLE (fz = 1 GHz, fp1 = 5 GHz, fp2 = 10 GHz, G = 1.0):
 - Config 2: Peaking ≈ 4-6 dB
 
 **Pass Criteria**: Peaking difference > 6 dB between configurations.
+
+**Note**: Peaking values are obtained cheaply from the Layer 3 Python analysis (Section 6.2.3); in-simulation measurement uses lock-in detection (Section 5.3).
 
 ### 6.4 Integration Test: Step Response
 
@@ -448,7 +513,7 @@ For typical CTLE (fz = 1 GHz, fp1 = 5 GHz, fp2 = 10 GHz, G = 1.0):
 ### 7.1 Module Declaration Template
 
 ```systemverilog
-`timescale 1ns / 1ps
+`timescale 1ps / 1fs  // High-speed SerDes domain (per project timescale guidelines)
 
 // Continuous-Time Linear Equalizer (CTLE) - Analog RNM
 // Real Number Modeling for behavioral simulation
@@ -618,15 +683,15 @@ end
 ### 8.1 Testbench Module Template
 
 ```systemverilog
-`timescale 1ns / 1ps
+`timescale 1ps / 1fs  // Time unit 1 ps: matches UPDATE_RATE = 1.0e12 (1 ps period)
 
 module ctle_rnm_tb #(
-    parameter SIM_TIMEOUT = 50000  // 50 µs
+    parameter SIM_TIMEOUT = 50_000_000  // 50 µs (time unit = 1 ps)
 );
 
     // Clock generation (for discrete-time model)
     logic clk = 0;
-    always #0.5 clk = ~clk;  // 1 THz (1 ps period) - matches UPDATE_RATE
+    always #0.5 clk = ~clk;  // 1 ps period (1 THz) - matches UPDATE_RATE = 1.0e12
 
     // DUT signals
     logic rst_n;
@@ -653,31 +718,43 @@ module ctle_rnm_tb #(
         $dumpvars(0, ctle_rnm_tb);
     end
 
-    // Helper task: Apply differential sine wave and measure gain
-    task measure_gain(input real freq_hz, output real gain_db);
+    // Helper task: lock-in (single-bin DFT) gain/phase measurement (Section 5.3)
+    task automatic measure_gain_lockin(
+        input  real freq_hz,
+        output real gain_db,
+        output real phase_deg
+    );
+        real PI = 3.14159265358979;
         real amplitude_in, amplitude_out;
-        real period, duration;
-        int cycles;
-        real cm_voltage = 0.5;  // Common-mode voltage
-
+        real period_ps, settle_ps, meas_ps, t_ps;
+        real signal_diff, out_diff;
+        real acc_i, acc_q;   // In-phase / quadrature accumulators
+        int  n_samples;
         begin
-            amplitude_in = 0.1;  // 100 mV differential amplitude
-            period = 1.0e9 / freq_hz;  // Period in ns
-            cycles = 10;  // Number of cycles to average
-            duration = cycles * period;
+            amplitude_in = 0.1;                       // 100 mV differential amplitude
+            period_ps    = 1.0e12 / freq_hz;          // Period in ps
+            settle_ps    = 5.0 * period_ps + 2000.0;  // Settling: 5 cycles + 2 ns
+            meas_ps      = 20.0 * period_ps;          // Integrate over 20 full cycles
+            acc_i = 0.0; acc_q = 0.0; n_samples = 0;
 
-            // Apply differential sine wave
-            for (real t = 0; t < duration; t = t + 0.001) begin  // 1 ps steps
-                real signal_diff = amplitude_in * $sin(2.0 * 3.14159 * freq_hz * t * 1.0e-9);
-                signal_in_p = cm_voltage + signal_diff / 2.0;
-                signal_in_n = cm_voltage - signal_diff / 2.0;
-                #0.001;  // Wait 1 ps
+            for (t_ps = 0.0; t_ps < settle_ps + meas_ps; t_ps += 1.0) begin  // 1 ps steps
+                signal_diff = amplitude_in * $sin(2.0 * PI * freq_hz * t_ps * 1.0e-12);
+                signal_in_p = 0.5 + signal_diff / 2.0;
+                signal_in_n = 0.5 - signal_diff / 2.0;
+                #1.0;  // 1 ps = 1 / UPDATE_RATE
+                if (t_ps >= settle_ps) begin
+                    out_diff = signal_out_p - signal_out_n;
+                    acc_i += out_diff * $sin(2.0 * PI * freq_hz * t_ps * 1.0e-12);
+                    acc_q += out_diff * $cos(2.0 * PI * freq_hz * t_ps * 1.0e-12);
+                    n_samples++;
+                end
             end
 
-            // Measure differential output amplitude (simplified: assumes steady-state)
-            real signal_out_diff = signal_out_p - signal_out_n;
-            amplitude_out = /* ... measure peak-to-peak / 2 of signal_out_diff ... */;
-            gain_db = 20.0 * $log10(amplitude_out / amplitude_in);
+            // Note: residual spectral leakage from a non-integer number of
+            // samples per cycle is negligible for the ±1 dB smoke-test tolerance
+            amplitude_out = 2.0 * $sqrt(acc_i*acc_i + acc_q*acc_q) / n_samples;
+            gain_db   = 20.0 * $log10(amplitude_out / amplitude_in);
+            phase_deg = $atan2(acc_q, acc_i) * 180.0 / PI;  // Informational
         end
     endtask
 
@@ -692,10 +769,13 @@ module ctle_rnm_tb #(
         ctrl_pole2_freq = 10.0e9;
         ctrl_dc_gain = 1.0;
 
-        #10 rst_n = 1;
+        #100 rst_n = 1;  // 100 ps
 
         // Test 1: DC response (see section 6.1)
-        // Test 2: Frequency sweep (see section 6.2)
+        // Test 2: Layer 4 sine-sweep smoke test (see section 6.2.4)
+        //         using measure_gain_lockin() at 3-5 frequencies vs. H(z) reference
+        // Note: Layers 1-3 (coefficient / sample-exact / discretization checks)
+        //       run offline in Python (see sections 6.2.1-6.2.3 and 8.3)
         // ...
 
         if (error_count == 0) begin
@@ -733,6 +813,14 @@ endmodule
 
 **Verilator Note**: Verilator supports `real` types for simulation (no synthesis).
 
+### 8.3 Python Verification Scripts (Layers 1-3)
+
+Following the flicker-noise batch verification workflow (`scripts/verify_noise_match_batch.py`), a companion script `scripts/verify_ctle_match.py` (to be implemented alongside the RTL) performs:
+
+1. **Layer 1**: Compute reference coefficients with `scipy.signal.bilinear` and compare against the debug-hook values (Section 7.4) dumped by the simulation
+2. **Layer 2**: Extract the impulse response from `sim/waves/ctle_rnm.vcd` (via `vcdvcd`) and compare sample-by-sample against `scipy.signal.lfilter`
+3. **Layer 3**: Evaluate H(z) with `scipy.signal.freqz`, check it against the theoretical |H(jω)|, and emit a Bode plot for documentation
+
 ---
 
 ## 9. References
@@ -761,6 +849,7 @@ endmodule
 | Version | Date       | Author | Description                     |
 |---------|------------|--------|---------------------------------|
 | 1.0     | 2025-01-11 | Claude | Initial specification creation  |
+| 1.1     | 2026-07-20 | Claude | Layered frequency-response verification strategy (Sections 5, 6.2, 8.3); testbench/RTL timescale corrected to `1ps/1fs`; lock-in measurement task |
 
 ---
 

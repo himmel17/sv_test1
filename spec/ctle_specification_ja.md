@@ -1,7 +1,7 @@
 # CTLE (Continuous-Time Linear Equalizer) 仕様書
 
-**ドキュメントバージョン**: 1.0
-**最終更新日**: 2025-01-11
+**ドキュメントバージョン**: 1.1
+**最終更新日**: 2026-07-20
 **対象**: 高速SerDes (10-25 Gbps) PCIe Gen3/4/5向け
 **モデリングアプローチ**: SystemVerilog Real Number Modeling (RNM)
 
@@ -287,25 +287,53 @@ signal_in → [1次セクション] → intermediate → [極セクション] �
 
 ## 5. 周波数応答検証
 
-### 5.1 Bode線図生成
+### 5.1 検証戦略 (階層化)
 
-**目的**: 振幅と位相応答が理論と一致することを検証。
+CTLEモデルは離散時間LTI IIRフィルタである。したがって、実装の正しさと仕様適合性を**別々の層**で検証し、不一致発生時に原因を一意に切り分けられるようにする：
 
-**手順**:
-1. 複数の周波数で正弦波入力でCTLEを刺激: 100 MHz, 500 MHz, 1 GHz, 2 GHz, 5 GHz, 10 GHz, 15 GHz
-2. 各周波数`f`について：
-   - `signal_in = A × sin(2π × f × t)`を印加、ここでA = 0.1 V
-   - 定常状態出力振幅`B`を測定
-   - Gainを計算: `Gain(dB) = 20 × log10(B / A)`
-3. Gain対周波数をプロット (Bode振幅線図)
-4. 理論的`|H(jω)|`と比較
+| 層 | 検証内容 | 方法 | 実行環境 |
+|----|----------|------|----------|
+| 1. 係数チェック | 係数計算 (b0, b1, a1, c0, a2) の正しさ | デバッグフック (セクション7.4) で係数をエクスポートし、Pythonリファレンス (`scipy.signal.bilinear`) と比較 | SVシミュレーション + Python |
+| 2. サンプル厳密一致 | 差分方程式が意図どおり実装されているか | インパルス入力を印加し、**全出力サンプル**を`scipy.signal.lfilter`と比較 | SVシミュレーション + Python |
+| 3. 離散化適合性 | H(z)がアナログ仕様H(s)を十分近似しているか | 純粋なPython解析: H(z)の`scipy.signal.freqz`と理論的\|H(jω)\|の比較 | Pythonのみ |
+| 4. セルフチェック・スモークテスト | エンドツーエンドの健全性とフレームワーク合否判定 | テストベンチ内で3-5周波数の正弦波スイープをロックイン検出で測定し、**H(z)**と比較 | SVテストベンチ |
 
-**合格基準**:
-- 測定gainが全周波数で理論値の±1 dB以内
-- Peaking周波数が期待値の±10%以内
-- Peaking振幅が±2 dB以内
+**根拠**:
+- 層1-2で「SystemVerilog実装 = 意図した差分方程式」を確定させる (サンプル厳密一致、`scripts/verify_noise_match_batch.py`のワークフローを流用)。
+- 層3は**追加のSystemVerilogシミュレーションなしで**、双線形離散化がアナログ仕様を満たすかを判定する。
+- 層4はテストフレームワークがテストベンチ内完結のセルフチェック (合否表示) を要求するために存在する。スモークテストであり、主たる適合性判定ではない。
 
-### 5.2 主要周波数ポイント
+### 5.2 理論参照値: H(s)ではなくH(z)
+
+シミュレーション出力は、実際に実装される**離散時間**伝達関数と比較しなければならない：
+
+```
+H_ref(f) = z = exp(j·2π·f·T) で評価したH(z)、  T = 1 / UPDATE_RATE
+```
+
+双線形変換は`ω_analog = (2/T) × tan(ω·T/2)`という周波数ワーピングを持つ。T = 1 psなら15 GHzまででワーピング誤差は0.1%未満であり±1 dB許容に対して無視できるが、H(z)を参照値とすることで「実装バグ」(層1-2) と「離散化誤差」(層3) を明確に分離できる。
+
+### 5.3 Gain/位相測定: ロックイン検出 (層4)
+
+離散サンプルのピーク値検出は、過渡応答の残留とサンプリンググリッドの影響を受けやすい。代わりに**ロックイン検出 (単一ビンDFT)** を使用する：
+
+1. 差動正弦波 `signal_diff = A × sin(2π × f × t)` を印加、A = 0.1 V
+2. 整定区間を破棄 (最遅時定数 ≈ 1/(2π × 1 GHz) ≈ 160 ps。5サイクル + 2 nsの破棄で十分以上)
+3. **整数周期分** (20サイクル以上) にわたって累積:
+   - `I = Σ y[n] × sin(2π·f·t_n)`
+   - `Q = Σ y[n] × cos(2π·f·t_n)`
+4. 振幅 `B = (2/N) × √(I² + Q²)`、位相 `φ = atan2(Q, I)`
+5. `Gain(dB) = 20 × log10(B / A)`
+
+位相と群遅延は追加コストなしで得られる — 参考データとして記録する。
+
+**テスト周波数の配置**: 均等配置の固定リストより、応答スロープが急な fz、fpeak ≈ √(fz × fp1)、fp1、fp2 の周辺に対数配置する方が有意義である。層4のスモークテストには3-5点で十分 (例: 0.5 GHz, 3 GHz, 10 GHz)。
+
+**合格基準 (層4)**:
+- 全スモークテスト周波数で、測定gainがH(z)参照値の±1 dB以内
+- (Peaking周波数/振幅の適合性は層3で判定 — セクション6.2.3を参照)
+
+### 5.4 主要周波数ポイント
 
 典型的なCTLE (fz = 1 GHz, fp1 = 5 GHz, fp2 = 10 GHz, G = 1.0)用：
 
@@ -336,13 +364,48 @@ signal_in → [1次セクション] → intermediate → [極セクション] �
 
 **合格基準**: 出力が期待値の±2%以内。
 
-### 6.2 単体テスト: 周波数スイープ (Bode線図)
+### 6.2 単体テスト: 周波数応答 (階層化検証)
 
-**目的**: 完全な周波数応答を検証。
+**目的**: セクション5.1の階層化戦略を用いて完全な周波数応答を検証。
 
-**手順**: (セクション5.1を参照)
+#### 6.2.1 層1: 係数検証
 
-**合格基準**: 全周波数ポイントが許容範囲内。
+**手順**:
+1. デフォルトパラメータでシミュレーションを実行し、デバッグフック (セクション7.4) 経由で b0, b1, a1, c0, a2 をダンプ
+2. Pythonでリファレンス係数を計算 (`scipy.signal.bilinear`)
+3. 比較
+
+**合格基準**: 全係数が相対誤差1e-12以内で一致。
+
+#### 6.2.2 層2: インパルス応答サンプル厳密一致
+
+**手順**:
+1. 単一サンプルの差動インパルスを印加 (例: UPDATE_RATE 1周期分だけ0.2 V、他は0 V)
+2. VCDから2048サンプル以上の出力を取得
+3. 同一入力をリファレンス係数で`scipy.signal.lfilter`に通す
+4. サンプル単位で比較 (ワークフローは`scripts/verify_noise_match_batch.py`に準拠)
+
+**合格基準**: 最大絶対誤差 < 1e-12 V (浮動小数点丸め誤差のみ)。
+
+#### 6.2.3 層3: 離散化適合性 (Pythonのみ)
+
+**手順**:
+1. 100 MHz～15 GHzの対数配置周波数で`scipy.signal.freqz`によりH(z)を評価
+2. 理論的|H(jω)| (セクション3.2.1) と比較し、ドキュメント用にBode線図を生成
+
+**合格基準**:
+- 100 MHz～15 GHzで|H(z)|が|H(jω)|の±1 dB以内
+- Peaking周波数が期待値の±10%以内、peaking振幅が±2 dB以内
+
+この層にSystemVerilogシミュレーションは不要。
+
+#### 6.2.4 層4: 正弦波スイープ・スモークテスト (セルフチェックテストベンチ)
+
+**手順**:
+1. テストベンチ内で、3-5周波数 (例: 0.5, 3, 10 GHz) のgainをロックイン検出 (セクション5.3) で測定
+2. 事前計算したH(z)参照値と比較
+
+**合格基準**: 全スモークテスト周波数で±1 dB以内。テストベンチが`*** PASSED ***` / `*** FAILED ***`を表示すること。
 
 ### 6.3 単体テスト: Peaking制御
 
@@ -358,6 +421,8 @@ signal_in → [1次セクション] → intermediate → [極セクション] �
 - 構成2: Peaking ≈ 4-6 dB
 
 **合格基準**: 構成間のpeaking差 > 6 dB。
+
+**注記**: Peaking値は層3のPython解析 (セクション6.2.3) で低コストに取得できる。シミュレーション内で測定する場合はロックイン検出 (セクション5.3) を使用する。
 
 ### 6.4 統合テスト: ステップ応答
 
@@ -448,7 +513,7 @@ signal_in → [1次セクション] → intermediate → [極セクション] �
 ### 7.1 モジュール宣言テンプレート
 
 ```systemverilog
-`timescale 1ns / 1ps
+`timescale 1ps / 1fs  // 高速SerDesドメイン (プロジェクトのtimescaleガイドラインに準拠)
 
 // Continuous-Time Linear Equalizer (CTLE) - Analog RNM
 // Real Number Modelingによる動作シミュレーション
@@ -618,15 +683,15 @@ end
 ### 8.1 テストベンチモジュールテンプレート
 
 ```systemverilog
-`timescale 1ns / 1ps
+`timescale 1ps / 1fs  // 時間単位1 ps: UPDATE_RATE = 1.0e12 (1 ps周期) に一致
 
 module ctle_rnm_tb #(
-    parameter SIM_TIMEOUT = 50000  // 50 µs
+    parameter SIM_TIMEOUT = 50_000_000  // 50 µs (時間単位 = 1 ps)
 );
 
     // クロック生成 (離散時間モデル用)
     logic clk = 0;
-    always #0.5 clk = ~clk;  // 1 THz (1 ps周期) - UPDATE_RATEに一致
+    always #0.5 clk = ~clk;  // 1 ps周期 (1 THz) - UPDATE_RATE = 1.0e12に一致
 
     // DUT信号
     logic rst_n;
@@ -653,31 +718,43 @@ module ctle_rnm_tb #(
         $dumpvars(0, ctle_rnm_tb);
     end
 
-    // ヘルパータスク: 差動正弦波を印加してgainを測定
-    task measure_gain(input real freq_hz, output real gain_db);
+    // ヘルパータスク: ロックイン (単一ビンDFT) によるgain/位相測定 (セクション5.3)
+    task automatic measure_gain_lockin(
+        input  real freq_hz,
+        output real gain_db,
+        output real phase_deg
+    );
+        real PI = 3.14159265358979;
         real amplitude_in, amplitude_out;
-        real period, duration;
-        int cycles;
-        real cm_voltage = 0.5;  // 同相電圧
-
+        real period_ps, settle_ps, meas_ps, t_ps;
+        real signal_diff, out_diff;
+        real acc_i, acc_q;   // 同相/直交成分アキュムレータ
+        int  n_samples;
         begin
-            amplitude_in = 0.1;  // 100 mV差動振幅
-            period = 1.0e9 / freq_hz;  // 周期 ns単位
-            cycles = 10;  // 平均化サイクル数
-            duration = cycles * period;
+            amplitude_in = 0.1;                       // 100 mV差動振幅
+            period_ps    = 1.0e12 / freq_hz;          // 周期 ps単位
+            settle_ps    = 5.0 * period_ps + 2000.0;  // 整定待ち: 5サイクル + 2 ns
+            meas_ps      = 20.0 * period_ps;          // 20整数周期にわたって積分
+            acc_i = 0.0; acc_q = 0.0; n_samples = 0;
 
-            // 差動正弦波を印加
-            for (real t = 0; t < duration; t = t + 0.001) begin  // 1 psステップ
-                real signal_diff = amplitude_in * $sin(2.0 * 3.14159 * freq_hz * t * 1.0e-9);
-                signal_in_p = cm_voltage + signal_diff / 2.0;
-                signal_in_n = cm_voltage - signal_diff / 2.0;
-                #0.001;  // 1 ps待機
+            for (t_ps = 0.0; t_ps < settle_ps + meas_ps; t_ps += 1.0) begin  // 1 psステップ
+                signal_diff = amplitude_in * $sin(2.0 * PI * freq_hz * t_ps * 1.0e-12);
+                signal_in_p = 0.5 + signal_diff / 2.0;
+                signal_in_n = 0.5 - signal_diff / 2.0;
+                #1.0;  // 1 ps = 1 / UPDATE_RATE
+                if (t_ps >= settle_ps) begin
+                    out_diff = signal_out_p - signal_out_n;
+                    acc_i += out_diff * $sin(2.0 * PI * freq_hz * t_ps * 1.0e-12);
+                    acc_q += out_diff * $cos(2.0 * PI * freq_hz * t_ps * 1.0e-12);
+                    n_samples++;
+                end
             end
 
-            // 差動出力振幅を測定 (簡略化: 定常状態を仮定)
-            real signal_out_diff = signal_out_p - signal_out_n;
-            amplitude_out = /* ... signal_out_diffのpeak-to-peak / 2を測定 ... */;
-            gain_db = 20.0 * $log10(amplitude_out / amplitude_in);
+            // 注記: 1周期あたりのサンプル数が非整数であることによる残留リーケージは
+            // ±1 dBのスモークテスト許容に対して無視できる
+            amplitude_out = 2.0 * $sqrt(acc_i*acc_i + acc_q*acc_q) / n_samples;
+            gain_db   = 20.0 * $log10(amplitude_out / amplitude_in);
+            phase_deg = $atan2(acc_q, acc_i) * 180.0 / PI;  // 参考情報
         end
     endtask
 
@@ -692,10 +769,13 @@ module ctle_rnm_tb #(
         ctrl_pole2_freq = 10.0e9;
         ctrl_dc_gain = 1.0;
 
-        #10 rst_n = 1;
+        #100 rst_n = 1;  // 100 ps
 
         // テスト1: DC応答 (セクション6.1を参照)
-        // テスト2: 周波数スイープ (セクション6.2を参照)
+        // テスト2: 層4 正弦波スイープ・スモークテスト (セクション6.2.4を参照)
+        //          measure_gain_lockin()で3-5周波数を測定しH(z)参照値と比較
+        // 注記: 層1-3 (係数/サンプル厳密一致/離散化チェック) は
+        //       Pythonでオフライン実行 (セクション6.2.1-6.2.3、8.3を参照)
         // ...
 
         if (error_count == 0) begin
@@ -733,6 +813,14 @@ endmodule
 
 **Verilator注記**: Verilatorはシミュレーション用に`real`型をサポート (合成不可)。
 
+### 8.3 Python検証スクリプト (層1-3)
+
+フリッカノイズのバッチ検証ワークフロー (`scripts/verify_noise_match_batch.py`) に準拠した検証スクリプト `scripts/verify_ctle_match.py` (RTLと併せて実装予定) が以下を実行する：
+
+1. **層1**: `scipy.signal.bilinear`でリファレンス係数を計算し、シミュレーションがダンプしたデバッグフック値 (セクション7.4) と比較
+2. **層2**: `sim/waves/ctle_rnm.vcd`からインパルス応答を抽出し (`vcdvcd`を使用)、`scipy.signal.lfilter`とサンプル単位で比較
+3. **層3**: `scipy.signal.freqz`でH(z)を評価し、理論的|H(jω)|と照合、ドキュメント用にBode線図を出力
+
 ---
 
 ## 9. 参考文献
@@ -761,6 +849,7 @@ endmodule
 | バージョン | 日付       | 作成者 | 説明                     |
 |------------|------------|--------|--------------------------|
 | 1.0        | 2025-01-11 | Claude | 初版仕様書作成           |
+| 1.1        | 2026-07-20 | Claude | 階層化周波数応答検証戦略 (セクション5, 6.2, 8.3)、テストベンチ/RTLのtimescaleを`1ps/1fs`に修正、ロックイン測定タスク追加 |
 
 ---
 

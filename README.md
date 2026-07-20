@@ -54,35 +54,47 @@ uv run python3 scripts/run_test.py --test counter --view  # 特定テストを�
 │   ├── demux_4bit.sv     # 4ビット1:4デマルチプレクサ
 │   ├── sine_wave_gen.sv  # DPI-C正弦波ジェネレータ（教育用）
 │   ├── ideal_amp_with_noise.sv  # DPI-Cフリッカノイズアンプ（PoC）
-│   ├── tx/               # 送信側モジュール（サブディレクトリ例）
-│   └── rx/               # 受信側モジュール（サブディレクトリ例）
+│   ├── tx/               # 送信側モジュール（SerDes実装用、現状空）
+│   ├── rx/               # 受信側モジュール（SerDes実装用、現状空）
+│   ├── channel/          # 伝送路モデル（SerDes実装用、現状空）
+│   └── modulation/       # 変調エンコーダ/デコーダ（SerDes実装用、現状空）
 ├── tb/                   # テストベンチ
 │   ├── counter_tb.sv     # カウンターテストベンチ
 │   ├── demux_4bit_tb.sv  # デマルチプレクサテストベンチ
 │   ├── sine_wave_gen_tb.sv  # 正弦波ジェネレータテストベンチ
-│   ├── ideal_amp_with_noise_tb.sv  # フリッカノイズテストベンチ
-│   ├── tx/               # 送信側テストベンチ（サブディレクトリ例）
-│   └── rx/               # 受信側テストベンチ（サブディレクトリ例）
+│   ├── ideal_amp_with_noise_tb.sv        # フリッカノイズテストベンチ（ストリーミング版）
+│   ├── ideal_amp_with_noise_batch_tb.sv  # フリッカノイズテストベンチ（バッチ版）
+│   └── tb_wrapper.cpp    # C++ラッパー（旧方式の名残。--binaryモード移行後は未使用）
 ├── dpi/                  # DPI-C実装（SystemVerilog-C統合）
 │   ├── dpi_math.c        # 数学関数ラッパー（sin, cos）
-│   ├── dpi_flicker_noise.c  # フリッカノイズジェネレータ（ストリーミング版）
+│   ├── dpi_flicker_noise.c        # フリッカノイズジェネレータ（ストリーミング版）
 │   ├── dpi_flicker_noise_batch.c  # フリッカノイズジェネレータ（バッチ版）
 │   ├── flicker_noise_batch.bin    # バイナリデータ（バッチ版用、生成される）
+│   ├── shaped_noise.bin           # スペクトル整形ノイズデータ（生成される）
 │   ├── README.md         # DPI-Cチュートリアル（英語）
-│   └── README_ja.md      # DPI-Cチュートリアル（日本語）
+│   ├── README_ja.md      # DPI-Cチュートリアル（日本語）
+│   └── batch_implementation_notes.md  # バッチ方式実装ノート
+├── spec/                 # SerDes仕様書（FFE/DFE/CTLE/アーキテクチャ/テスト戦略）
+│   └── *_specification.md, *_ja.md    # 英語版 + 日本語版
 ├── tests/                # テスト設定
-│   └── test_config.yaml  # テスト定義ファイル（YAML）
-├── sim/                  # シミュレーション出力
+│   └── test_config.yaml  # テスト定義ファイル（YAML、中央レジストリ）
+├── sim/                  # シミュレーション出力（gitignore対象）
 │   ├── obj_dir/          # Verilatorコンパイル成果物
+│   ├── vcs/              # VCSコンパイル成果物
 │   └── waves/            # VCD波形ファイル
 ├── scripts/              # テスト管理スクリプト
-│   ├── run_test.py       # メインテスト実行スクリプト
+│   ├── run_test.py       # メインテスト実行スクリプト（オーケストレータ）
+│   ├── simulators.py     # シミュレータ抽象化レイヤー（Verilator/VCS）
+│   ├── run_test_guide.md # テストフレームワーク完全解説
+│   ├── TIMESCALE_HANDLING.md      # timescale自動検出の詳細
 │   ├── generate_flicker_noise.py  # Pythonリファレンス実装（ストリーミング版）
 │   ├── generate_flicker_noise_batch.py  # Pythonリファレンス実装（バッチ版）
+│   ├── generate_custom_noise.py   # 任意スペクトル整形ノイズ生成（実験的、テスト未接続）
 │   ├── verify_noise_match.py      # 統計検証スクリプト（ストリーミング版）
 │   ├── verify_noise_match_batch.py  # 厳密一致検証スクリプト（バッチ版）
 │   └── flicker_noise_*.{npy,png,log}  # 生成される検証データ（scripts/内）
-├── pyproject.toml        # Python依存関係定義（推奨）
+├── ref/                  # ローカル参照資料（外部設計データ、git管理外）
+├── pyproject.toml        # Python依存関係定義（推奨、Python 3.12+）
 ├── uv.lock               # 依存関係ロックファイル
 ├── requirements.txt      # Python依存関係 - 実行環境（後方互換性用）
 ├── requirements-dev.txt  # Python依存関係 - 開発環境（後方互換性用）
@@ -94,16 +106,21 @@ uv run python3 scripts/run_test.py --test counter --view  # 特定テストを�
 
 ## 必要な環境
 
-- **Verilator** 5.0以上（検証済み: 5.042）
+- **Verilator** 5.0以上（検証済み: 5.042）— `--timing`, `--binary` を使用するため 5.0 以上が必須
 - **GTKWave** 3.3以上（検証済み: 3.3.104）
-- **Python** 3.6以上
+- **Python** 3.12以上（`pyproject.toml` の `requires-python = ">=3.12.11"` に準拠）
+  - 主な依存: pyyaml, numpy, scipy, matplotlib, vcdvcd, pyqt6（`uv sync` で自動インストール）
+- **Synopsys VCS**（オプション）— `--simulator vcs` 指定時のみ必要
 
 ## インストール
 
 ### Ubuntu/Debian
+
 ```bash
-sudo apt install verilator gtkwave python3
+sudo apt install gtkwave python3
 ```
+
+**注**: apt の Verilator は 5.0 未満の場合があります。バージョンが古い場合は「クイックスタート」記載の手順でソースからビルドしてください。
 
 ### Python依存関係のインストール
 
@@ -349,6 +366,15 @@ uv run python3 scripts/verify_noise_match_batch.py
 - 許容誤差: 1ナノボルト（ストリーミング版は10% RMS）
 - 出力: サンプル詳細ログファイルを含む
 
+**バッチ版のファイル**:
+- `scripts/generate_flicker_noise_batch.py` - Pythonリファレンス + バイナリファイル生成
+- `dpi/dpi_flicker_noise_batch.c` - 事前生成データをロードするDPI-C実装
+- `tb/ideal_amp_with_noise_batch_tb.sv` - バッチ版テストベンチ（4096サンプル）
+- `scripts/verify_noise_match_batch.py` - 厳密一致検証スクリプト
+- 設計検討の経緯は `dpi/batch_implementation_notes.md` を参照
+
+**関連（実験的）**: `scripts/generate_custom_noise.py` - 任意のターゲットスペクトル（CSVまたは数式）からスペクトル整形ノイズを生成し `dpi/shaped_noise.bin` に出力するスクリプト。ホワイトノイズをFFT→ゲインアレイでshaping→IFFTする方式。現時点ではテストフレームワークには未接続。
+
 **実装の詳細**:
 
 - **Cのstatic変数によるステートフル設計**:
@@ -385,14 +411,34 @@ uv run python3 scripts/verify_noise_match_batch.py
 `tests/test_config.yaml`でテストを定義します：
 
 ```yaml
-verilator:
-  common_flags:
-    - --binary
-    - --timing
-    - -Wall
-    - --trace
-    - -Wno-TIMESCALEMOD
-  execution_timeout: "30s"  # Verilator実行のフリーズ対策
+project:
+  rtl_dir: rtl
+  tb_dir: tb
+  sim_dir: sim
+  obj_dir: sim/obj_dir
+  vcs_dir: sim/vcs
+  waves_dir: sim/waves
+  default_simulator: verilator  # グローバルデフォルト: verilator または vcs
+
+# シミュレータ別設定
+simulators:
+  verilator:
+    common_flags:
+      - --binary
+      - --timing
+      - -Wall
+      - --trace
+      - -Wno-TIMESCALEMOD
+    execution_timeout: "30s"  # Verilator実行のフリーズ対策（実時間）
+
+  vcs:
+    common_flags:
+      - -sverilog
+      - -timescale=1ns/1ps
+      - -debug_access+all
+      - +vcs+lic+wait
+      - -full64
+    execution_timeout: "30s"
 
 tests:
   - name: counter
@@ -431,9 +477,10 @@ tests:
 **重要な設定項目：**
 
 - `execution_timeout`: Verilator実行の実時間タイムアウト（フリーズ対策）
+- `default_simulator`: グローバルデフォルトのシミュレータ（`verilator` または `vcs`。テストごとに `simulator:` で上書き可能、CLI の `--simulator` が最優先）
 - `sim_timeout`: シミュレーション時間のタイムアウト（テストベンチの`SIM_TIMEOUT`パラメータに渡される）
   - 単位: `ns`, `us`, `ms`, `s` が使用可能
-  - テストベンチの`timescale`（現在`1ns/1ps`）に基づいて数値に変換される
+  - テストベンチの`timescale`を**自動検出**して数値に変換される（詳細: `scripts/TIMESCALE_HANDLING.md`）
 - `testbench_file`: サブディレクトリパス対応（例: `tx/tx_ffe_tb.sv` → `tb/tx/` 配下）
 - `rtl_files`: サブディレクトリパス対応（例: `tx/tx_ffe.sv` → `rtl/tx/` 配下）
   - ルートディレクトリとサブディレクトリのパスを混在可能
@@ -503,15 +550,14 @@ tests:
 - 環境変数`DISPLAY`が設定されているか確認（WSL使用時）
 
 ### Pythonモジュールが見つからない（ModuleNotFoundError: No module named 'yaml'）
-- uv仮想環境を使用している場合は、仮想環境がアクティベートされているか確認:
-  ```bash
-  source .venv/bin/activate  # Linux/macOS
-  ```
+- `uv run python3 ...` で実行しているか確認（仮想環境が自動的に使われる）
 - 依存関係が正しくインストールされているか確認:
   ```bash
-  uv pip install -r requirements.txt
-  # または
-  pip3 install pyyaml
+  uv sync
+  ```
+- 仮想環境をアクティベートして使う場合:
+  ```bash
+  source .venv/bin/activate  # Linux/macOS
   ```
 
 ### uvコマンドが見つからない
@@ -525,6 +571,22 @@ tests:
   # シェルを再起動するか、PATHをリロード
   source ~/.bashrc  # または ~/.zshrc
   ```
+
+## ドキュメント一覧
+
+| ドキュメント | 内容 |
+|---|---|
+| `README.md` | このファイル（セットアップ、使い方、サンプル詳細、トラブルシューティング） |
+| `CLAUDE.md` | Claude Code用の開発規約（テスト追加手順、コーディングスタイル） |
+| `scripts/run_test_guide.md` | テストフレームワーク完全解説（アーキテクチャ、クラス構成、タイムアウト、CLI引数） |
+| `scripts/TIMESCALE_HANDLING.md` | timescale自動検出とsim_timeout換算の詳細 |
+| `dpi/README_ja.md` / `dpi/README.md` | DPI-Cチュートリアル（日本語 / 英語） |
+| `dpi/batch_implementation_notes.md` | フリッカノイズのバッチ方式実装ノート |
+| `spec/ffe_specification.md` (+`_ja`) | FFE（Feed-Forward Equalizer）仕様 |
+| `spec/dfe_specification.md` (+`_ja`) | DFE（Decision Feedback Equalizer）仕様 |
+| `spec/ctle_specification.md` (+`_ja`) | CTLE（Continuous-Time Linear Equalizer）仕様 |
+| `spec/serdes_architecture.md` (+`_ja`) | SerDesシステムアーキテクチャ仕様 |
+| `spec/test_strategy.md` (+`_ja`) | 検証戦略・テスト計画 |
 
 ## ライセンス
 

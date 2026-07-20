@@ -29,3 +29,6 @@ Thumbs.db
 
 # .png files for debug
 scripts/*.png
+
+# Local reference materials (external design data, not tracked)
+ref/
