@@ -3,7 +3,7 @@
 Flicker Noise Verification Script
 
 Compares Python reference implementation vs SystemVerilog DPI-C implementation:
-1. Parse VCD file to extract noise samples
+1. Parse waveform file (VCD or FST) to extract noise samples
 2. Compute spectrum for both datasets
 3. Compare RMS and spectral slope
 4. Generate comparison plots
@@ -19,55 +19,52 @@ Author: Generated for SerDes flicker noise PoC
 
 import numpy as np
 import matplotlib.pyplot as plt
-from vcdvcd import VCDVCD
 from pathlib import Path
 import sys
+
+from waveform_reader import find_wave_file, read_signals
+
+TEST_NAME = 'ideal_amp_with_noise'
 
 # Test parameters (must match generate_flicker_noise.py and testbench)
 SAMPLE_RATE = 100e6
 EXPECTED_RMS = 0.25
 GAIN = 10.0
 DC_INPUT = 0.5
-# VCD skip count: accounts for reset period only (10 clocks)
+# Skip count of value changes: accounts for reset period only (10 clocks)
 # This ensures we compare sample_counter 0-1023 for both Python and SystemVerilog
-RESET_SKIP_VCD = 10  # Skip reset period to reach valid data
+# (VCD and FST have the same value-change sequence)
+RESET_SKIP_SAMPLES = 10  # Skip reset period to reach valid data
 
 
-def parse_vcd_noise(vcd_path):
+def parse_wave_noise(wave_path):
     """
-    Extract noise component from VCD file.
+    Extract noise component from waveform file (VCD or FST).
 
     Args:
-        vcd_path: Path to VCD file
+        wave_path: Path to VCD or FST file
 
     Returns:
         numpy.ndarray: Noise samples (amp_out - amp_out_ideal)
     """
-    print(f"[1/5] Parsing VCD file: {vcd_path}")
-
-    try:
-        vcd = VCDVCD(vcd_path)
-    except Exception as e:
-        print(f"ERROR: Failed to parse VCD file: {e}")
-        return None
-
-    # Debug: print available signals
-    print("Available signals:", list(vcd.references_to_ids.keys())[:20])  # First 20
+    print(f"[1/5] Parsing waveform file: {wave_path}")
 
     # Extract signals (adjust hierarchy as needed)
     try:
-        amp_out = vcd['ideal_amp_with_noise_tb.amp_out']
-        amp_out_ideal = vcd['ideal_amp_with_noise_tb.amp_out_ideal']
+        signals = read_signals(wave_path, [
+            'ideal_amp_with_noise_tb.amp_out',
+            'ideal_amp_with_noise_tb.amp_out_ideal',
+        ])
     except KeyError as e:
-        print(f"ERROR: Signal not found in VCD: {e}")
-        print("Available signals:")
-        for sig in vcd.references_to_ids.keys():
-            print(f"  - {sig}")
+        print(f"ERROR: {e.args[0]}")
+        return None
+    except Exception as e:
+        print(f"ERROR: Failed to parse waveform file: {e}")
         return None
 
     # Get time-series data
-    amp_out_tv = amp_out.tv
-    amp_out_ideal_tv = amp_out_ideal.tv
+    amp_out_tv = signals['ideal_amp_with_noise_tb.amp_out']
+    amp_out_ideal_tv = signals['ideal_amp_with_noise_tb.amp_out_ideal']
 
     # amp_out_ideal may be constant (DC value), so get its value
     if len(amp_out_ideal_tv) > 0:
@@ -80,11 +77,11 @@ def parse_vcd_noise(vcd_path):
 
     # Extract noise: out - out_ideal
     # amp_out_ideal is constant (DC = GAIN × DC_INPUT)
-    # Skip first RESET_SKIP_VCD samples to exclude reset period
+    # Skip first RESET_SKIP_SAMPLES samples to exclude reset period
     noise_sv = []
     for i, (time, val_out) in enumerate(amp_out_tv):
         # Skip reset period
-        if i < RESET_SKIP_VCD:
+        if i < RESET_SKIP_SAMPLES:
             continue
 
         # Convert to float
@@ -93,7 +90,7 @@ def parse_vcd_noise(vcd_path):
         except (ValueError, TypeError):
             continue
 
-    print(f"      Extracted {len(noise_sv)} noise samples (skipped first {RESET_SKIP_VCD} reset period samples)")
+    print(f"      Extracted {len(noise_sv)} noise samples (skipped first {RESET_SKIP_SAMPLES} reset period samples)")
     return np.array(noise_sv)
 
 
@@ -146,14 +143,14 @@ def main():
     noise_python = np.load(ref_path)
     print(f"[INFO] Loaded Python reference: {len(noise_python)} samples from {ref_path}")
 
-    # Load SystemVerilog from VCD
-    vcd_path = 'sim/waves/ideal_amp_with_noise.vcd'
-    if not Path(vcd_path).exists():
-        print(f"ERROR: VCD file not found: {vcd_path}")
-        print("Run test first: uv run python3 scripts/run_test.py --test ideal_amp_with_noise")
+    # Load SystemVerilog from waveform (sim/waves/{TEST_NAME}.fst or .vcd)
+    wave_path = find_wave_file(TEST_NAME)
+    if wave_path is None:
+        print(f"ERROR: Waveform file not found: sim/waves/{TEST_NAME}.fst or .vcd")
+        print(f"Run test first: uv run python3 scripts/run_test.py --test {TEST_NAME}")
         return 1
 
-    noise_sv = parse_vcd_noise(vcd_path)
+    noise_sv = parse_wave_noise(wave_path)
     if noise_sv is None:
         return 1
 

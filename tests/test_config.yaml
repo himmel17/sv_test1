@@ -27,9 +27,23 @@
 #     --trace (or --trace-vcd) → sim/waves/{name}.vcd
 #     --trace-fst              → sim/waves/{name}.fst  (wins if both are given)
 # - Per test: "wave_format: vcd | fst" replaces the trace flag for that test only
-#   (needed to get VCD while common_flags has --trace-fst)
+#   (needed to get VCD while common_flags has --trace-fst; adding --trace to
+#    verilator_extra_flags does NOT work because --trace-fst wins)
+#   Other trace options (--trace-depth, --trace-underscore, ...) are kept.
+#
+#   Example: dump this test as VCD although common_flags has --trace-fst
+#     - name: my_test
+#       ...
+#       wave_format: vcd   # → sim/waves/my_test.vcd (Verilator gets --trace instead of --trace-fst)
+#
+#   Example: dump this test as FST although common_flags has --trace
+#       wave_format: fst   # → sim/waves/my_test.fst
+#
+#   Use cases: external tools that read VCD only, inspecting/diffing waveforms as text.
+#   Invalid values (other than vcd / fst) raise an error. VCS ignores "fst" with a warning.
 # - The path is passed to the testbench as +dumpfile=<path> (Verilator and VCS)
 # - VCS always generates VCD
+# - scripts/verify_noise_match*.py read both .fst and .vcd (via pywellen)
 #
 # =============================================================================
 
@@ -109,7 +123,7 @@ tests:
       - ideal_amp_with_noise.sv
     verilator_extra_flags:
       - ../dpi/dpi_flicker_noise.c  # DPI-C flicker noise generator
-    wave_format: vcd     # scripts/verify_noise_match.py parses VCD only
+    # wave_format: vcd   # Uncomment to dump VCD for this test only (see "Waveform Format" above)
     sim_timeout: "15us"  # Simulation timeout (1024 samples @ 100MHz = 10.24us + margin)
 
   # Ideal amplifier with flicker noise - BATCH MODE (Method 2 PoC)
@@ -122,7 +136,7 @@ tests:
       - ideal_amp_with_noise.sv  # Reuse streaming RTL
     verilator_extra_flags:
       - ../dpi/dpi_flicker_noise_batch.c  # Batch DPI-C implementation
-    wave_format: vcd     # scripts/verify_noise_match_batch.py parses VCD only
+    # wave_format: vcd   # Uncomment to dump VCD for this test only (see "Waveform Format" above)
     sim_timeout: "50us"  # 4096 samples @ 100MHz = 40.96us + margin
 
   # SerDes Transmitter (template - uncomment when ready)

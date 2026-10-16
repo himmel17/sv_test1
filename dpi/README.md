@@ -528,14 +528,14 @@ uv run python3 scripts/generate_flicker_noise.py
 **Step 2: Run SystemVerilog Simulation**
 ```bash
 uv run python3 scripts/run_test.py --test ideal_amp_with_noise
-# Outputs: sim/waves/ideal_amp_with_noise.vcd
+# Outputs: sim/waves/ideal_amp_with_noise.fst (.vcd with --trace)
 # Testbench applies DC input, collects 1044 samples (20 reset skip + 1024 valid)
 ```
 
 **Step 3: Statistical Verification**
 ```bash
 uv run python3 scripts/verify_noise_match.py
-# Extracts noise from VCD: amp_out - amp_out_ideal
+# Extracts noise from waveform (FST or VCD, via pywellen): amp_out - amp_out_ideal
 # Compares RMS and spectral slope with Python reference
 # Outputs: scripts/flicker_noise_verification.png
 ```
@@ -568,7 +568,7 @@ uv run python3 scripts/generate_flicker_noise_batch.py
 **Step 2: Run SystemVerilog Simulation (Batch)**
 ```bash
 uv run python3 scripts/run_test.py --test ideal_amp_with_noise_batch
-# Outputs: sim/waves/ideal_amp_with_noise_batch.vcd
+# Outputs: sim/waves/ideal_amp_with_noise_batch.fst (.vcd with --trace)
 # DPI-C loads pre-generated samples from binary file
 ```
 
@@ -630,7 +630,7 @@ The C implementation uses `rand()` while Python uses `random.uniform()`. These p
 **Solution:**
 - Testbench collects 1044 samples (TOTAL_SAMPLES = 1024 + 20)
 - First 20 samples are "reset skip" period for circuit stabilization
-- Verification script skips first 10 VCD samples (reset period)
+- Verification script skips first 10 waveform samples (reset period)
 - Compares sample_counter 0-1023 from both implementations
 
 ### Use Cases
@@ -640,7 +640,7 @@ This example demonstrates techniques for:
 - **RF simulation**: Flicker noise in oscillators, amplifiers
 - **Mixed-signal**: Analog behavioral models in digital sim
 - **Algorithm validation**: Python prototype → C implementation workflow
-- **Statistical verification**: VCD-based post-processing
+- **Statistical verification**: Waveform-based (FST / VCD) post-processing
 
 ### Educational Value
 
@@ -649,7 +649,7 @@ Learn:
 - ✅ When NOT to use `pure` keyword
 - ✅ Python-to-C algorithm porting workflow
 - ✅ Statistical verification techniques
-- ✅ VCD parsing and post-processing
+- ✅ Waveform (FST / VCD) parsing and post-processing
 - ✅ FFT-based spectral analysis
 - ✅ RNG differences and calibration
 

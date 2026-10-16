@@ -83,7 +83,7 @@ module ideal_amp_with_noise_tb #(
     //==========================================================================
     // Path (and .vcd/.fst extension) is passed by the framework via +dumpfile=.
     // VCD/FST format itself is chosen by Verilator's --trace / --trace-fst flag.
-    // NOTE: scripts/verify_noise_match.py parses VCD only (requires --trace).
+    // NOTE: scripts/verify_noise_match.py reads either format (via pywellen).
     initial begin
         string dumpfile;
         if (!$value$plusargs("dumpfile=%s", dumpfile))
@@ -193,7 +193,7 @@ module ideal_amp_with_noise_tb #(
         $display("  1. Run Python verification:");
         $display("     uv run python3 scripts/verify_noise_match.py");
         $display("  2. View waveform:");
-        $display("     gtkwave sim/waves/ideal_amp_with_noise.vcd");
+        $display("     uv run python3 scripts/run_test.py --test ideal_amp_with_noise --view");
         $display("  3. Check spectrum:");
         $display("     open flicker_noise_verification.png");
 

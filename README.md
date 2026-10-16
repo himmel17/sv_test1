@@ -94,6 +94,7 @@ uv run python3 scripts/run_test.py --test counter --view  # 特定テストを�
 │   ├── generate_custom_noise.py   # 任意スペクトル整形ノイズ生成（実験的、テスト未接続）
 │   ├── verify_noise_match.py      # 統計検証スクリプト（ストリーミング版）
 │   ├── verify_noise_match_batch.py  # 厳密一致検証スクリプト（バッチ版）
+│   ├── waveform_reader.py         # 波形読み込み共通モジュール（FST / VCD、pywellen）
 │   └── flicker_noise_*.{npy,png,log}  # 生成される検証データ（scripts/内）
 ├── ref/                  # ローカル参照資料（外部設計データ、git管理外）
 ├── pyproject.toml        # Python依存関係定義（推奨、Python 3.12+）
@@ -111,7 +112,7 @@ uv run python3 scripts/run_test.py --test counter --view  # 特定テストを�
 - **Verilator** 5.0以上（検証済み: 5.042, 5.052）— `--timing`, `--binary` を使用するため 5.0 以上が必須
 - **GTKWave** 3.3以上（検証済み: 3.3.104）
 - **Python** 3.12以上（`pyproject.toml` の `requires-python = ">=3.12.11"` に準拠）
-  - 主な依存: pyyaml, numpy, scipy, matplotlib, vcdvcd, pyqt6（`uv sync` で自動インストール）
+  - 主な依存: pyyaml, numpy, scipy, matplotlib, pywellen（VCD / FST 読み込み）, pyqt6（`uv sync` で自動インストール）
 - **Synopsys VCS**（オプション）— `--simulator vcs` 指定時のみ必要
 
 ## インストール
@@ -319,7 +320,7 @@ uv run python3 scripts/run_test.py --test sine_wave_gen
 - ✅ **1/fノイズ**: フリッカノイズ生成のためのVoss-McCARTNEYアルゴリズム実装
 - ✅ **Python プロトタイプ → C実装**: アルゴリズム検証ワークフロー
 - ✅ **統計的検証**: RMSとスペクトル傾きの比較（サンプル単位ではない）
-- ✅ **VCDベース解析**: シミュレーション波形からデータ抽出して検証
+- ✅ **波形ベース解析**: シミュレーション波形（FST / VCD、pywellen で読み込み）からデータ抽出して検証
 - ✅ **スペクトル解析**: FFTベースのパワースペクトル密度検証
 - ✅ **リセット処理**: 解析からリセットトランジェントを適切に除外
 
@@ -331,7 +332,7 @@ uv run python3 scripts/generate_flicker_noise.py
 
 # ステップ2: DPI-Cノイズ注入付きSystemVerilogシミュレーション実行
 uv run python3 scripts/run_test.py --test ideal_amp_with_noise
-# 出力: sim/waves/ideal_amp_with_noise.vcd
+# 出力: sim/waves/ideal_amp_with_noise.fst（--trace の場合は .vcd）
 
 # ステップ3: PythonとSystemVerilogの統計的比較
 uv run python3 scripts/verify_noise_match.py
@@ -352,7 +353,7 @@ uv run python3 scripts/generate_flicker_noise_batch.py
 
 # ステップ2: SystemVerilogシミュレーション実行
 uv run python3 scripts/run_test.py --test ideal_amp_with_noise_batch
-# 出力: sim/waves/ideal_amp_with_noise_batch.vcd
+# 出力: sim/waves/ideal_amp_with_noise_batch.fst（--trace の場合は .vcd）
 
 # ステップ3: 厳密一致検証
 uv run python3 scripts/verify_noise_match_batch.py
@@ -402,7 +403,7 @@ uv run python3 scripts/verify_noise_match_batch.py
 
 - **リセットスキップ**: テストベンチは1044サンプル収集（リセットスキップ20 + 有効1024）
 
-- **VCD解析**: 最初の10サンプル（リセット期間）をスキップしてsample_counter値を整列
+- **波形解析**: 最初の10サンプル（リセット期間）をスキップしてsample_counter値を整列
 
 **用途**: SerDes/RFアプリケーションのデジタルシミュレーションでアナログ効果（ノイズ、ジッタ）をモデル化する方法を実演
 
@@ -553,7 +554,7 @@ tests:
 - テスト単位で形式を固定するには、テスト定義に `wave_format: vcd`（または `fst`）を書く
   - 共通フラグの `--trace` / `--trace-vcd` / `--trace-fst` が、指定した形式のフラグに差し替わる
   - 共通フラグが `--trace-fst` のとき、`verilator_extra_flags` に `--trace` を足しても VCD にはならない（FST が優先されるため）
-- `scripts/verify_noise_match*.py` は VCD 専用。`ideal_amp_with_noise` / `ideal_amp_with_noise_batch` は `wave_format: vcd` で固定している
+- `scripts/verify_noise_match*.py` は `sim/waves/{test_name}.fst` / `.vcd` のうち存在する方を pywellen で読む（`scripts/waveform_reader.py`）。両方ある場合は新しい方を使い、警告を出す
 - FST のビルドで `fatal error: lz4.h: No such file or directory` が出る場合は lz4 の開発ヘッダを入れる（Verilator 5.052 で確認）:
   `sudo apt install -y liblz4-dev`
 

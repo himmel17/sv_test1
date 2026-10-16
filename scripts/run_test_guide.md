@@ -824,11 +824,12 @@ def run(self, view=False):
 - **古い波形の削除**: `run_simulation()` は実行前に `remove_stale_waves()` で同一テストの「別フォーマットの」波形ファイルを削除する（例: FST に切り替えた後に古い `.vcd` が残って GTKWave で取り違えるのを防ぐ）。`clean()` は `remove_waves()` で `.vcd` と `.fst` の両方を削除する。
 - **テスト単位の指定（`wave_format`）**: テスト定義に `wave_format: vcd` または `wave_format: fst` を書くと、`VerilatorSimulator.get_flags()` が共通フラグ・追加フラグ中の `--trace` / `--trace-vcd` / `--trace-fst`（`-` 1 個の表記も含む）を取り除き、指定形式のフラグ（`--trace` / `--trace-fst`）を末尾に加える。`--trace-depth` などの他の trace オプションは残る。共通フラグが `--trace-fst` のとき `verilator_extra_flags` に `--trace` を足しても FST が優先されるため、VCD に戻すにはこのキーが必要。`vcd` / `fst` 以外の値は `ValueError`。VCS で `wave_format: fst` を指定した場合は警告を出して VCD を使う。
   ```yaml
-  - name: ideal_amp_with_noise
+  - name: my_test
     ...
-    wave_format: vcd     # scripts/verify_noise_match.py parses VCD only
+    wave_format: vcd     # このテストだけ VCD (Verilator には --trace-fst の代わりに --trace が渡る)
   ```
-- **後段スクリプトの制約**: `scripts/verify_noise_match*.py` は VCD のみをパースするため、対象の `ideal_amp_with_noise` / `ideal_amp_with_noise_batch` は `wave_format: vcd` で固定している。
+  用途: VCD しか読めない外部ツールを使うテスト、波形をテキストで確認・diff したいテストなど。`tests/test_config.yaml` 冒頭の "Waveform Format" 節にも記述例がある。
+- **後段スクリプト**: `scripts/verify_noise_match*.py` は `scripts/waveform_reader.py` を使う。`find_wave_file()` が `sim/waves/{test_name}.fst` / `.vcd` のうち存在する方を返し（両方ある場合は更新時刻が新しい方を使い警告）、`read_signals()` が pywellen で VCD / FST を同じ API で読む。FST は real 値を double のまま保持するため、VCD（10 進 16 桁のテキスト）より誤差が小さい。
 - **FST のビルド要件**: Verilator 5.052 の FST ライタは `lz4.h` を include するため、lz4 の開発ヘッダ（`liblz4-dev`）が必要。無いと `fatal error: lz4.h` でコンパイルに失敗する。
 - GTKWave（`--view`）は VCD/FST のどちらも開ける（`view_waveform()` は `wave_file` を渡す）。
 

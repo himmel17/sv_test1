@@ -78,7 +78,7 @@ Python は必ず uv 仮想環境を使用する(`uv run` で実行、パッケ�
 - **Verilator 5.0+**: 全テストで `--timing` と `--binary` を使用。`-Wno-TIMESCALEMOD` 付き
 - 波形形式は Verilator フラグで決まる: `--trace`(または `--trace-vcd`)→ `.vcd`、`--trace-fst` → `.fst`。両方あれば FST(警告表示)。`--trace-threads` は形式を選ばない(5.052 では非推奨・無効で、`-Wall` 下ではビルドエラー)。判定対象は `common_flags` + `verilator_extra_flags`
 - テスト単位で形式を固定するときは YAML のテストに `wave_format: vcd | fst` を書く(形式を選ぶ trace フラグを差し替える)。`verilator_extra_flags` に `--trace` を足しても、共通フラグに `--trace-fst` があれば FST のままになるため VCD には戻せない
-- `scripts/verify_noise_match*.py` は VCD 専用。対象の 2 テストは `wave_format: vcd` で固定している
+- 波形を読む Python スクリプトは `scripts/waveform_reader.py`(pywellen、VCD / FST 両対応)を使う。`find_wave_file()` が `sim/waves/{test_name}.fst` / `.vcd` の存在する方を返す
 - FST の生成には lz4 のヘッダ(`liblz4-dev`)が必要(Verilator 5.052 で確認)
 - シミュレータ選択の優先順位: CLI `--simulator` > テスト毎の `simulator:` > YAML の `default_simulator` > verilator
 - 抽象化レイヤーは `scripts/simulators.py`(`BaseSimulator` / `VerilatorSimulator` / `VCSSimulator` / `SimulatorFactory`)。詳細は `scripts/run_test_guide.md`

@@ -528,14 +528,14 @@ uv run python3 scripts/generate_flicker_noise.py
 **ステップ2：SystemVerilogシミュレーション実行**
 ```bash
 uv run python3 scripts/run_test.py --test ideal_amp_with_noise
-# 出力: sim/waves/ideal_amp_with_noise.vcd
+# 出力: sim/waves/ideal_amp_with_noise.fst（--trace の場合は .vcd）
 # テストベンチはDC入力を印加し、1044サンプル収集（リセットスキップ20 + 有効1024）
 ```
 
 **ステップ3：統計的検証**
 ```bash
 uv run python3 scripts/verify_noise_match.py
-# VCDからノイズ抽出：amp_out - amp_out_ideal
+# 波形（FST / VCD、pywellen で読み込み）からノイズ抽出：amp_out - amp_out_ideal
 # Pythonリファレンスと RMS およびスペクトル傾きを比較
 # 出力: scripts/flicker_noise_verification.png
 ```
@@ -568,7 +568,7 @@ uv run python3 scripts/generate_flicker_noise_batch.py
 **ステップ2：SystemVerilogシミュレーション実行（バッチ）**
 ```bash
 uv run python3 scripts/run_test.py --test ideal_amp_with_noise_batch
-# 出力: sim/waves/ideal_amp_with_noise_batch.vcd
+# 出力: sim/waves/ideal_amp_with_noise_batch.fst（--trace の場合は .vcd）
 # DPI-Cはバイナリファイルから事前生成されたサンプルをロード
 ```
 
@@ -630,7 +630,7 @@ C実装は`rand()`を使用し、Pythonは`random.uniform()`を使用します�
 **解決策：**
 - テストベンチは1044サンプル収集（TOTAL_SAMPLES = 1024 + 20）
 - 最初の20サンプルは回路安定化のための「リセットスキップ」期間
-- 検証スクリプトは最初の10 VCDサンプル（リセット期間）をスキップ
+- 検証スクリプトは波形の最初の10サンプル（リセット期間）をスキップ
 - 両実装からsample_counter 0-1023を比較
 
 ### 用途
@@ -640,7 +640,7 @@ C実装は`rand()`を使用し、Pythonは`random.uniform()`を使用します�
 - **RFシミュレーション**：発振器やアンプのフリッカノイズ
 - **ミックスドシグナル**：デジタルシミュレーションでのアナログ動作モデル
 - **アルゴリズム検証**：Pythonプロトタイプ → C実装ワークフロー
-- **統計的検証**：VCDベースの後処理
+- **統計的検証**：波形（FST / VCD）ベースの後処理
 
 ### 教育的価値
 
@@ -649,7 +649,7 @@ C実装は`rand()`を使用し、Pythonは`random.uniform()`を使用します�
 - ✅ `pure`キーワードを使用すべきでない場合
 - ✅ Python-to-Cアルゴリズム移植ワークフロー
 - ✅ 統計的検証技術
-- ✅ VCD解析と後処理
+- ✅ 波形（FST / VCD）解析と後処理
 - ✅ FFTベースのスペクトル解析
 - ✅ 乱数生成器の違いと較正
 
