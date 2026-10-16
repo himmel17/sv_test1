@@ -81,7 +81,7 @@ uv run python3 scripts/run_test.py --test counter --view  # 特定テストを�
 ├── sim/                  # シミュレーション出力（gitignore対象）
 │   ├── obj_dir/          # Verilatorコンパイル成果物
 │   ├── vcs/              # VCSコンパイル成果物
-│   └── waves/            # VCD波形ファイル
+│   └── waves/            # 波形ファイル（VCD / FST）
 ├── scripts/              # テスト管理スクリプト
 │   ├── run_test.py       # メインテスト実行スクリプト（オーケストレータ）
 │   ├── simulators.py     # シミュレータ抽象化レイヤー（Verilator/VCS）
@@ -106,7 +106,7 @@ uv run python3 scripts/run_test.py --test counter --view  # 特定テストを�
 
 ## 必要な環境
 
-- **Verilator** 5.0以上（検証済み: 5.042）— `--timing`, `--binary` を使用するため 5.0 以上が必須
+- **Verilator** 5.0以上（検証済み: 5.042, 5.052）— `--timing`, `--binary` を使用するため 5.0 以上が必須
 - **GTKWave** 3.3以上（検証済み: 3.3.104）
 - **Python** 3.12以上（`pyproject.toml` の `requires-python = ">=3.12.11"` に準拠）
   - 主な依存: pyyaml, numpy, scipy, matplotlib, vcdvcd, pyqt6（`uv sync` で自動インストール）
@@ -427,7 +427,7 @@ simulators:
       - --binary
       - --timing
       - -Wall
-      - --trace
+      - --trace-fst        # 波形形式: --trace → .vcd / --trace-fst → .fst
       - -Wno-TIMESCALEMOD
     execution_timeout: "30s"  # Verilator実行のフリーズ対策（実時間）
 
@@ -494,7 +494,8 @@ tests:
 2. **テストベンチを作成**: `tb/`にテストベンチファイルを追加
    - パラメータ化されたタイムアウトを含める: `module xxx_tb #(parameter SIM_TIMEOUT = xxxx);`
    - `timescale 1ns / 1ps`を含める
-   - VCDダンプパスを正しく設定: `$dumpfile("sim/waves/{test_name}.vcd")`
+   - 波形ダンプパスは plusarg で受け取る（フレームワークが `+dumpfile=sim/waves/{test_name}.{vcd|fst}` を渡す。雛形は `tb/counter_tb.sv`）:
+     `if (!$value$plusargs("dumpfile=%s", dumpfile)) dumpfile = "sim/waves/{test_name}.vcd"; $dumpfile(dumpfile);`
    - タイムアウト処理: `initial begin #SIM_TIMEOUT; $display("ERROR: ..."); $finish; end`
    - サブディレクトリ構造をサポート（例: `tb/tx/`, `tb/rx/`）
 
@@ -541,9 +542,18 @@ tests:
 - SystemVerilog構文を確認
 - `--timing`オプションが必要（Verilator 5.0以上）
 
-### VCDファイルが生成されない
+### 波形ファイル（VCD / FST）が生成されない・形式が違う
 - `sim/waves/`ディレクトリの存在を確認
-- テストベンチの`$dumpfile()`パスを確認
+- テストベンチが `$value$plusargs("dumpfile=%s", ...)` で受け取ったパスを `$dumpfile()` に渡しているか確認
+- 形式は Verilator フラグで決まる: `--trace`（`--trace-vcd`）→ `.vcd`、`--trace-fst` → `.fst`
+  - `common_flags` と `verilator_extra_flags` の両方に VCD/FST フラグがあると FST になる（警告表示）
+  - `--trace-threads` は形式を選ばない（Verilator 5.052 では非推奨・無効で、`-Wall` 下では警告によりビルドが止まる）
+- テスト単位で形式を固定するには、テスト定義に `wave_format: vcd`（または `fst`）を書く
+  - 共通フラグの `--trace` / `--trace-vcd` / `--trace-fst` が、指定した形式のフラグに差し替わる
+  - 共通フラグが `--trace-fst` のとき、`verilator_extra_flags` に `--trace` を足しても VCD にはならない（FST が優先されるため）
+- `scripts/verify_noise_match*.py` は VCD 専用。`ideal_amp_with_noise` / `ideal_amp_with_noise_batch` は `wave_format: vcd` で固定している
+- FST のビルドで `fatal error: lz4.h: No such file or directory` が出る場合は lz4 の開発ヘッダを入れる（Verilator 5.052 で確認）:
+  `sudo apt install -y liblz4-dev`
 
 ### GTKWaveが起動しない
 - `gtkwave --version`でインストールを確認

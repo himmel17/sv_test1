@@ -26,9 +26,14 @@ module demux_4bit_tb #(
         .out3(out3)
     );
 
-    // VCD dump for GTKWave
+    // Waveform dump for GTKWave
+    // Path (and .vcd/.fst extension) is passed by the framework via +dumpfile=.
+    // VCD/FST format itself is chosen by Verilator's --trace / --trace-fst flag.
     initial begin
-        $dumpfile("sim/waves/demux_4bit.vcd");
+        string dumpfile;
+        if (!$value$plusargs("dumpfile=%s", dumpfile))
+            dumpfile = "sim/waves/demux_4bit.vcd";  // Default for standalone run
+        $dumpfile(dumpfile);
         $dumpvars(0, demux_4bit_tb);
     end
 

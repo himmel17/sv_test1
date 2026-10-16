@@ -21,6 +21,17 @@
 # - Ultra-high (>25 Gbps):   Use `timescale 100fs/1fs (rarely needed)
 #
 # =============================================================================
+# Waveform Format (VCD / FST)
+# =============================================================================
+# - Default: decided by Verilator trace flag in common_flags + verilator_extra_flags
+#     --trace (or --trace-vcd) → sim/waves/{name}.vcd
+#     --trace-fst              → sim/waves/{name}.fst  (wins if both are given)
+# - Per test: "wave_format: vcd | fst" replaces the trace flag for that test only
+#   (needed to get VCD while common_flags has --trace-fst)
+# - The path is passed to the testbench as +dumpfile=<path> (Verilator and VCS)
+# - VCS always generates VCD
+#
+# =============================================================================
 
 project:
   rtl_dir: rtl
@@ -38,7 +49,7 @@ simulators:
       - --binary
       - --timing
       - -Wall
-      - --trace
+      - --trace-fst           # Waveform: --trace → sim/waves/{name}.vcd, --trace-fst → sim/waves/{name}.fst
       - -Wno-TIMESCALEMOD
     execution_timeout: "30s"  # Real-world execution timeout (Verilator freeze protection)
 
@@ -98,6 +109,7 @@ tests:
       - ideal_amp_with_noise.sv
     verilator_extra_flags:
       - ../dpi/dpi_flicker_noise.c  # DPI-C flicker noise generator
+    wave_format: vcd     # scripts/verify_noise_match.py parses VCD only
     sim_timeout: "15us"  # Simulation timeout (1024 samples @ 100MHz = 10.24us + margin)
 
   # Ideal amplifier with flicker noise - BATCH MODE (Method 2 PoC)
@@ -110,6 +122,7 @@ tests:
       - ideal_amp_with_noise.sv  # Reuse streaming RTL
     verilator_extra_flags:
       - ../dpi/dpi_flicker_noise_batch.c  # Batch DPI-C implementation
+    wave_format: vcd     # scripts/verify_noise_match_batch.py parses VCD only
     sim_timeout: "50us"  # 4096 samples @ 100MHz = 40.96us + margin
 
   # SerDes Transmitter (template - uncomment when ready)

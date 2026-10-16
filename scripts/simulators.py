@@ -141,6 +141,45 @@ def extract_timescale(sv_file_path):
     return (None, None)
 
 
+# Waveform file extension per format
+WAVE_EXTENSIONS = {'vcd': '.vcd', 'fst': '.fst'}
+
+# Verilator flag that selects each waveform format (used by per-test wave_format)
+VERILATOR_TRACE_FLAGS = {'vcd': '--trace', 'fst': '--trace-fst'}
+
+# Verilator flags that select the waveform format (names without leading dashes).
+# Other trace options (--trace-depth, --trace-underscore, ...) are kept.
+VERILATOR_TRACE_FORMAT_NAMES = {'trace', 'trace-vcd', 'trace-fst'}
+
+
+def detect_verilator_wave_format(flags):
+    """
+    Determine Verilator waveform format from command-line flags.
+
+    Verilator behavior (measured with 5.042 and 5.052):
+    - --trace / --trace-vcd → VCD
+    - --trace-fst           → FST (wins over --trace regardless of order)
+    - --trace-threads does not select FST (5.042: VCD alone; 5.052: deprecated, no effect)
+
+    Args:
+        flags: List of Verilator flags (common_flags + verilator_extra_flags)
+
+    Returns:
+        str: 'fst' or 'vcd'
+    """
+    # Verilator accepts both "-opt" and "--opt"
+    names = {str(flag).lstrip('-') for flag in flags}
+
+    has_fst = 'trace-fst' in names
+    has_vcd = bool(names & {'trace', 'trace-vcd'})
+
+    if has_fst and has_vcd:
+        print("   Warning: Both VCD (--trace/--trace-vcd) and FST (--trace-fst) flags given; "
+              "Verilator generates FST")
+
+    return 'fst' if has_fst else 'vcd'
+
+
 class BaseSimulator(ABC):
     """
     Abstract base class for SystemVerilog simulators.
@@ -173,7 +212,50 @@ class BaseSimulator(ABC):
         self.top_module = test_config['top_module']
         self.testbench_file = test_config['testbench_file']
         self.rtl_files = test_config.get('rtl_files', [])
-        self.vcd_file = self.waves_dir / f"{self.test_name}.vcd"
+        self.wave_format = self.get_wave_format()
+        self.wave_file = self.waves_dir / f"{self.test_name}{WAVE_EXTENSIONS[self.wave_format]}"
+
+    def get_wave_format(self) -> str:
+        """Return waveform format ('vcd' or 'fst'). Default is VCD."""
+        if self.test_config.get('wave_format', 'vcd') != 'vcd':
+            print(f"   Warning: wave_format '{self.test_config['wave_format']}' is not supported "
+                  f"by this simulator; using VCD")
+        return 'vcd'
+
+    def get_run_args(self) -> list:
+        """
+        Return runtime arguments for the simulation executable.
+
+        The waveform path is passed via plusarg so that the testbench does not
+        hardcode the file extension:
+            $value$plusargs("dumpfile=%s", dumpfile)
+        """
+        return [f"+dumpfile={self.wave_file}"]
+
+    def remove_stale_waves(self):
+        """Remove waveform files of other formats left from previous runs."""
+        for ext in WAVE_EXTENSIONS.values():
+            stale = self.waves_dir / f"{self.test_name}{ext}"
+            if stale != self.wave_file and stale.exists():
+                stale.unlink()
+                print(f"   Removed stale waveform: {stale}")
+
+    def remove_waves(self):
+        """Remove waveform files of all formats for this test."""
+        for ext in WAVE_EXTENSIONS.values():
+            wave = self.waves_dir / f"{self.test_name}{ext}"
+            if wave.exists():
+                wave.unlink()
+                print(f"   Removed {wave}")
+
+    def report_wave_file(self):
+        """Print waveform generation result."""
+        label = self.wave_format.upper()
+        if self.wave_file.exists():
+            size = self.wave_file.stat().st_size
+            print(f"✓ Simulation complete ({label}: {size} bytes)\n")
+        else:
+            print(f"⚠ {label} file not generated (may be normal for some tests)\n")
 
     @abstractmethod
     def get_work_dir(self) -> Path:
@@ -271,17 +353,43 @@ class VerilatorSimulator(BaseSimulator):
     def get_executable_path(self) -> Path:
         return self.get_work_dir() / f"V{self.top_module}"
 
+    def get_flags(self) -> list:
+        """
+        Return Verilator flags (common_flags + verilator_extra_flags).
+
+        If the test specifies wave_format ('vcd' or 'fst'), format-selecting
+        trace flags (--trace / --trace-vcd / --trace-fst) are replaced with the
+        flag for that format. This is required to get VCD for a single test
+        while common_flags has --trace-fst, because Verilator generates FST
+        whenever --trace-fst is present.
+        """
+        flags = (self.sim_config.get('common_flags', [])
+                 + self.test_config.get('verilator_extra_flags', []))
+
+        wave_format = self.test_config.get('wave_format')
+        if wave_format is None:
+            return flags
+
+        if wave_format not in VERILATOR_TRACE_FLAGS:
+            raise ValueError(
+                f"Invalid wave_format '{wave_format}' in test '{self.test_name}'. "
+                f"Expected one of: {', '.join(VERILATOR_TRACE_FLAGS)}"
+            )
+
+        flags = [f for f in flags if str(f).lstrip('-') not in VERILATOR_TRACE_FORMAT_NAMES]
+        return flags + [VERILATOR_TRACE_FLAGS[wave_format]]
+
+    def get_wave_format(self) -> str:
+        return detect_verilator_wave_format(self.get_flags())
+
     def compile(self) -> bool:
         """Compile design with Verilator."""
         print(f"🔨 Compiling test '{self.test_name}' with Verilator...")
 
         cmd = ["verilator"]
 
-        # Add common flags
-        cmd.extend(self.sim_config.get('common_flags', []))
-
-        # Add test-specific flags
-        cmd.extend(self.test_config.get('verilator_extra_flags', []))
+        # Add common flags + test-specific flags (trace flag adjusted by wave_format)
+        cmd.extend(self.get_flags())
 
         # Add output directory
         cmd.extend(["-Mdir", str(self.get_work_dir())])
@@ -352,9 +460,13 @@ class VerilatorSimulator(BaseSimulator):
 
         try:
             self.waves_dir.mkdir(parents=True, exist_ok=True)
+            self.remove_stale_waves()
+
+            cmd = [str(executable)] + self.get_run_args()
+            print(f"   Command: {' '.join(cmd)}")
 
             result = subprocess.run(
-                [str(executable)],
+                cmd,
                 cwd=self.project_root,
                 check=True,
                 capture_output=True,
@@ -366,13 +478,8 @@ class VerilatorSimulator(BaseSimulator):
             if result.stderr:
                 print(result.stderr)
 
-            if self.vcd_file.exists():
-                vcd_size = self.vcd_file.stat().st_size
-                print(f"✓ Simulation complete (VCD: {vcd_size} bytes)\n")
-                return True
-            else:
-                print("⚠ VCD file not generated (may be normal for some tests)\n")
-                return True
+            self.report_wave_file()
+            return True
 
         except subprocess.TimeoutExpired:
             print(f"✗ Simulation TIMEOUT (exceeded {timeout_seconds}s)")
@@ -394,9 +501,7 @@ class VerilatorSimulator(BaseSimulator):
             shutil.rmtree(work_dir)
             print(f"   Removed {work_dir}")
 
-        if self.vcd_file.exists():
-            self.vcd_file.unlink()
-            print(f"   Removed {self.vcd_file}")
+        self.remove_waves()
 
         print("✓ Clean complete\n")
 
@@ -489,9 +594,13 @@ class VCSSimulator(BaseSimulator):
 
         try:
             self.waves_dir.mkdir(parents=True, exist_ok=True)
+            self.remove_stale_waves()
+
+            cmd = [str(executable)] + self.get_run_args()
+            print(f"   Command: {' '.join(cmd)}")
 
             result = subprocess.run(
-                [str(executable)],
+                cmd,
                 cwd=self.project_root,
                 check=True,
                 capture_output=True,
@@ -503,13 +612,8 @@ class VCSSimulator(BaseSimulator):
             if result.stderr:
                 print(result.stderr)
 
-            if self.vcd_file.exists():
-                vcd_size = self.vcd_file.stat().st_size
-                print(f"✓ Simulation complete (VCD: {vcd_size} bytes)\n")
-                return True
-            else:
-                print("⚠ VCD file not generated (may be normal for some tests)\n")
-                return True
+            self.report_wave_file()
+            return True
 
         except subprocess.TimeoutExpired:
             print(f"✗ Simulation TIMEOUT (exceeded {timeout_seconds}s)")
@@ -547,9 +651,7 @@ class VCSSimulator(BaseSimulator):
             ucli_key.unlink()
             print(f"   Removed {ucli_key}")
 
-        if self.vcd_file.exists():
-            self.vcd_file.unlink()
-            print(f"   Removed {self.vcd_file}")
+        self.remove_waves()
 
         print("✓ Clean complete\n")
 

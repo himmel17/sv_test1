@@ -2,6 +2,7 @@
 sim/obj_dir/
 sim/*.vcd
 sim/waves/*.vcd
+sim/waves/*.fst
 
 # Python cache
 __pycache__/

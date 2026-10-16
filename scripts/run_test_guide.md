@@ -272,17 +272,18 @@ SimulatorFactory.create_simulator(type)
    │  ├─ self.simulator.run_simulation() 呼び出し
    │  │  ├─ 実行可能ファイルチェック: sim/obj_dir/Vcounter_tb ✓
    │  │  ├─ waves ディレクトリ作成: mkdir -p sim/waves
-   │  │  ├─ 実行: subprocess.run([sim/obj_dir/Vcounter_tb], timeout=30.0)
+   │  │  ├─ 他フォーマットの古い波形ファイルを削除: remove_stale_waves()
+   │  │  ├─ 実行: subprocess.run([sim/obj_dir/Vcounter_tb, "+dumpfile=.../sim/waves/counter.vcd"], timeout=30.0)
    │  │  ├─ テストベンチ動作:
    │  │  │  ├─ パラメータ: SIM_TIMEOUT=50000
    │  │  │  ├─ セルフチェックロジック実行
-   │  │  │  ├─ VCD 出力: $dumpfile("sim/waves/counter.vcd")
+   │  │  │  ├─ 波形出力: $value$plusargs("dumpfile=%s", dumpfile) → $dumpfile(dumpfile)
    │  │  │  └─ 終了: $finish
-   │  │  └─ 出力確認: sim/waves/counter.vcd ✓
+   │  │  └─ 出力確認: sim/waves/counter.vcd ✓（--trace-fst 指定時は counter.fst）
    │  └─ 結果: True（成功）
    │
    └─ [波形表示]
-      ├─ view=True かつ VCD 存在 ✓
+      ├─ view=True かつ 波形ファイル（VCD/FST）存在 ✓
       ├─ GTKWave 起動: subprocess.Popen(["gtkwave", "sim/waves/counter.vcd"])
       └─ バックグラウンドで実行
 
@@ -340,7 +341,36 @@ class BaseSimulator(ABC):
         self.top_module = test_config['top_module']
         self.testbench_file = test_config['testbench_file']
         self.rtl_files = test_config.get('rtl_files', [])
-        self.vcd_file = self.waves_dir / f"{self.test_name}.vcd"
+        self.wave_format = self.get_wave_format()
+        self.wave_file = self.waves_dir / f"{self.test_name}{WAVE_EXTENSIONS[self.wave_format]}"
+
+    def get_wave_format(self) -> str:
+        """波形フォーマット ('vcd' または 'fst') を返す。既定は VCD"""
+        return 'vcd'
+
+    def get_run_args(self) -> list:
+        """実行ファイルへ渡す引数。波形パスを plusarg で渡す"""
+        return [f"+dumpfile={self.wave_file}"]
+
+    def remove_stale_waves(self):
+        """前回実行で残った他フォーマットの波形ファイルを削除"""
+        for ext in WAVE_EXTENSIONS.values():
+            stale = self.waves_dir / f"{self.test_name}{ext}"
+            if stale != self.wave_file and stale.exists():
+                stale.unlink()
+                print(f"   Removed stale waveform: {stale}")
+
+    def remove_waves(self):
+        """このテストの全フォーマット (.vcd / .fst) の波形ファイルを削除"""
+        for ext in WAVE_EXTENSIONS.values():
+            wave = self.waves_dir / f"{self.test_name}{ext}"
+            if wave.exists():
+                wave.unlink()
+                print(f"   Removed {wave}")
+
+    def report_wave_file(self):
+        """波形ファイルの生成結果を表示 (例: "✓ Simulation complete (VCD: N bytes)")"""
+        ...
 
     @abstractmethod
     def get_work_dir(self) -> Path:
@@ -371,6 +401,7 @@ class BaseSimulator(ABC):
 **共通機能**:
 - `get_effective_timescale()`: テストベンチからタイムスケールを自動検出
 - `validate_timescales()`: RTL とテストベンチのタイムスケール整合性検証
+- `get_wave_format()` / `get_run_args()` / `remove_stale_waves()` / `remove_waves()` / `report_wave_file()`: 波形フォーマット（VCD/FST）の扱い。詳細は [4.6. 波形フォーマットの選択](#46-波形フォーマットの選択vcd--fst)
 
 ### 4.2. VerilatorSimulator クラス
 
@@ -387,16 +418,35 @@ class VerilatorSimulator(BaseSimulator):
         # Verilator は "V{module}" という命名規則
         return self.get_work_dir() / f"V{self.top_module}"
 
+    def get_flags(self) -> list:
+        # common_flags + verilator_extra_flags
+        # テストに wave_format があれば、形式を選ぶ trace フラグ
+        # (--trace / --trace-vcd / --trace-fst) をその形式のフラグに差し替える
+        flags = (self.sim_config.get('common_flags', [])
+                 + self.test_config.get('verilator_extra_flags', []))
+
+        wave_format = self.test_config.get('wave_format')
+        if wave_format is None:
+            return flags
+
+        if wave_format not in VERILATOR_TRACE_FLAGS:
+            raise ValueError(...)  # vcd / fst 以外はエラー
+
+        flags = [f for f in flags if str(f).lstrip('-') not in VERILATOR_TRACE_FORMAT_NAMES]
+        return flags + [VERILATOR_TRACE_FLAGS[wave_format]]
+
+    def get_wave_format(self) -> str:
+        # 実際に Verilator へ渡すフラグから VCD/FST を判定
+        return detect_verilator_wave_format(self.get_flags())
+
     def compile(self) -> bool:
         """Verilator でコンパイル"""
         cmd = ["verilator"]
 
-        # 共通フラグ (YAML から)
-        cmd.extend(self.sim_config.get('common_flags', []))
-        # 例: --binary, --timing, -Wall, --trace, -Wno-TIMESCALEMOD
-
-        # テスト固有フラグ
-        cmd.extend(self.test_config.get('verilator_extra_flags', []))
+        # 共通フラグ + テスト固有フラグ (YAML から)
+        # wave_format 指定時は trace フラグを差し替え済み (4.6 参照)
+        cmd.extend(self.get_flags())
+        # 例: --binary, --timing, -Wall, --trace-fst, -Wno-TIMESCALEMOD
 
         # 出力ディレクトリ
         cmd.extend(["-Mdir", str(self.get_work_dir())])
@@ -432,20 +482,24 @@ class VerilatorSimulator(BaseSimulator):
         executable = self.get_executable_path()  # V{module}
         timeout = parse_timeout(self.sim_config.get('execution_timeout', '30s'))
 
+        self.remove_stale_waves()  # 他フォーマットの古い波形を削除
+
+        # 実行ファイル + "+dumpfile=<wave_file>"
+        cmd = [str(executable)] + self.get_run_args()
         result = subprocess.run(
-            [str(executable)],
+            cmd,
             cwd=self.project_root,
             timeout=timeout,
             ...
         )
+        self.report_wave_file()
         return result.returncode == 0
 
     def clean(self):
-        """obj_dir/ と VCD ファイルを削除"""
+        """obj_dir/ と波形ファイル (.vcd / .fst) を削除"""
         if self.get_work_dir().exists():
             shutil.rmtree(self.get_work_dir())
-        if self.vcd_file.exists():
-            self.vcd_file.unlink()
+        self.remove_waves()
 ```
 
 ### 4.3. VCSSimulator クラス
@@ -503,16 +557,21 @@ class VCSSimulator(BaseSimulator):
         executable = self.get_executable_path()  # simv
         timeout = parse_timeout(self.sim_config.get('execution_timeout', '30s'))
 
+        self.remove_stale_waves()
+
+        # VCS は常に VCD (get_wave_format() は基底クラスの 'vcd' のまま)
+        cmd = [str(executable)] + self.get_run_args()
         result = subprocess.run(
-            [str(executable)],
+            cmd,
             cwd=self.project_root,
             timeout=timeout,
             ...
         )
+        self.report_wave_file()
         return result.returncode == 0
 
     def clean(self):
-        """vcs/, csrc/, simv.daidir/, ucli.key, VCD ファイルを削除"""
+        """vcs/, csrc/, simv.daidir/, ucli.key, 波形ファイルを削除"""
         if self.get_work_dir().exists():
             shutil.rmtree(self.get_work_dir())
 
@@ -525,8 +584,7 @@ class VCSSimulator(BaseSimulator):
                 else:
                     path.unlink()
 
-        if self.vcd_file.exists():
-            self.vcd_file.unlink()
+        self.remove_waves()
 ```
 
 ### 4.4. SimulatorFactory クラス
@@ -681,7 +739,7 @@ if simulator_type is None:  # コマンドラインで指定されていない�
      ↓
    [クリーンアップフェーズ] TestRunner.clean()
      ↓
-   self.simulator.clean()               # sim/obj_dir/ と VCD を削除
+   self.simulator.clean()               # sim/obj_dir/ と波形 (VCD/FST) を削除
    ```
 
 **SimulatorFactory の動作例**
@@ -744,10 +802,35 @@ def run(self, view=False):
 | **実行ファイル名** | `V{top_module}` | `simv` |
 | **コンパイルコマンド** | `verilator` | `vcs` |
 | **パラメータ渡し** | `-GSIM_TIMEOUT=50000` | `+define+SIM_TIMEOUT=50000` |
-| **主要フラグ** | `--binary`, `--timing`, `--trace` | `-sverilog`, `-debug_access+all`, `-full64` |
+| **主要フラグ** | `--binary`, `--timing`, `--trace`（または `--trace-fst`） | `-sverilog`, `-debug_access+all`, `-full64` |
 | **作業ディレクトリ** | `sim/obj_dir/` | `sim/vcs/` |
 | **追加成果物** | なし | `csrc/`, `simv.daidir/`, `ucli.key` |
-| **VCD ダンプ** | `--trace` フラグ | `-debug_access+all` フラグ |
+| **波形ダンプ** | `--trace` / `--trace-vcd`（VCD）または `--trace-fst`（FST） | `-debug_access+all` フラグ（VCD のみ） |
+
+### 4.6. 波形フォーマットの選択（VCD / FST）
+
+波形フォーマットは、YAML の `common_flags` と `verilator_extra_flags` に含まれる Verilator フラグから自動で決まります（`simulators.py` の `detect_verilator_wave_format(flags)`）。テスト単位で形式を固定するには、テスト定義に `wave_format: vcd | fst` を書きます（下記）。
+
+| 指定フラグ | 波形フォーマット | 拡張子 |
+|-----------|-----------------|--------|
+| `--trace` / `--trace-vcd` | VCD | `.vcd` |
+| `--trace-fst` | FST | `.fst` |
+| `--trace-threads` | 形式を選ばない（5.042: 単独で VCD / 5.052: 非推奨・無効、`-Wall` 下ではビルドエラー） | — |
+| `--trace` と `--trace-fst` の併用 | FST（警告を表示） | `.fst` |
+
+- **併用時の挙動**: VCD 系と FST 系の両方を指定すると、Verilator 5.042 / 5.052 での実測では指定順によらず FST が生成される。フレームワークも FST と判定し、警告（`Warning: Both VCD (--trace/--trace-vcd) and FST (--trace-fst) flags given; Verilator generates FST`）を表示する。
+- **VCS**: 常に VCD（`get_wave_format()` を上書きしないため）。
+- **波形パスの受け渡し**: 実行ファイルは `[executable] + get_run_args()` で起動され、`get_run_args()` は `["+dumpfile=<wave_file>"]` を返す（例: `Vcounter_tb +dumpfile=.../sim/waves/counter.vcd`）。テストベンチは `$value$plusargs("dumpfile=%s", dumpfile)` で受け取り `$dumpfile(dumpfile)` に渡すため、拡張子を固定しない。`+dumpfile` なしの単独実行では、テストベンチ内の既定値（`sim/waves/{test_name}.vcd`）が使われる。
+- **古い波形の削除**: `run_simulation()` は実行前に `remove_stale_waves()` で同一テストの「別フォーマットの」波形ファイルを削除する（例: FST に切り替えた後に古い `.vcd` が残って GTKWave で取り違えるのを防ぐ）。`clean()` は `remove_waves()` で `.vcd` と `.fst` の両方を削除する。
+- **テスト単位の指定（`wave_format`）**: テスト定義に `wave_format: vcd` または `wave_format: fst` を書くと、`VerilatorSimulator.get_flags()` が共通フラグ・追加フラグ中の `--trace` / `--trace-vcd` / `--trace-fst`（`-` 1 個の表記も含む）を取り除き、指定形式のフラグ（`--trace` / `--trace-fst`）を末尾に加える。`--trace-depth` などの他の trace オプションは残る。共通フラグが `--trace-fst` のとき `verilator_extra_flags` に `--trace` を足しても FST が優先されるため、VCD に戻すにはこのキーが必要。`vcd` / `fst` 以外の値は `ValueError`。VCS で `wave_format: fst` を指定した場合は警告を出して VCD を使う。
+  ```yaml
+  - name: ideal_amp_with_noise
+    ...
+    wave_format: vcd     # scripts/verify_noise_match.py parses VCD only
+  ```
+- **後段スクリプトの制約**: `scripts/verify_noise_match*.py` は VCD のみをパースするため、対象の `ideal_amp_with_noise` / `ideal_amp_with_noise_batch` は `wave_format: vcd` で固定している。
+- **FST のビルド要件**: Verilator 5.052 の FST ライタは `lz4.h` を include するため、lz4 の開発ヘッダ（`liblz4-dev`）が必要。無いと `fatal error: lz4.h` でコンパイルに失敗する。
+- GTKWave（`--view`）は VCD/FST のどちらも開ける（`view_waveform()` は `wave_file` を渡す）。
 
 ---
 
@@ -922,7 +1005,7 @@ class TestRunner:
 
         # テスト属性（レポート用）
         self.test_name = test_config['name']
-        self.vcd_file = self.simulator.vcd_file
+        self.wave_file = self.simulator.wave_file
 ```
 
 **主な変更点**:
@@ -938,7 +1021,7 @@ class TestRunner:
 
 **残存メソッド**:
 - `clean()`: シミュレータの `clean()` を呼び出す
-- `view_waveform()`: GTKWave 起動（シミュレータ非依存）
+- `view_waveform()`: GTKWave 起動（シミュレータ非依存、VCD/FST 両対応）
 - `run()`: 完全なテストフローを実行（シミュレータ使用）
 
 **削除されたメソッド**:
@@ -1671,7 +1754,7 @@ def run(self, view=False):
         return False
 
     # View waveform if requested
-    if view and self.vcd_file.exists():
+    if view and self.wave_file.exists():
         self.view_waveform()
 
     return True
@@ -1696,12 +1779,10 @@ def compile(self):
     # Build command
     cmd = ["verilator"]
 
-    # Add common flags (from YAML simulators.verilator.common_flags)
-    cmd.extend(self.sim_config.get('common_flags', []))
-    # 例: --binary, --timing, -Wall, --trace, -Wno-TIMESCALEMOD
-
-    # Add test-specific flags
-    cmd.extend(self.test_config.get('verilator_extra_flags', []))
+    # Add common flags + test-specific flags (trace flag adjusted by wave_format)
+    cmd.extend(self.get_flags())
+    # 例: --binary, --timing, -Wall, --trace-fst, -Wno-TIMESCALEMOD
+    # (--trace → VCD, --trace-fst → FST。wave_format で差し替え可。4.6 参照)
 
     # Add output directory
     cmd.extend(["-Mdir", str(self.get_work_dir())])
@@ -1816,9 +1897,14 @@ def run_simulation(self):
     try:
         # Make sure waves directory exists
         self.waves_dir.mkdir(parents=True, exist_ok=True)
+        self.remove_stale_waves()  # 他フォーマットの古い波形を削除
+
+        # 波形パスは plusarg (+dumpfile=...) でテストベンチへ渡す
+        cmd = [str(executable)] + self.get_run_args()
+        print(f"   Command: {' '.join(cmd)}")
 
         result = subprocess.run(
-            [str(executable)],
+            cmd,
             cwd=self.project_root,
             check=True,
             capture_output=True,
@@ -1830,14 +1916,11 @@ def run_simulation(self):
         if result.stderr:
             print(result.stderr)
 
-        # Check if VCD file was created
-        if self.vcd_file.exists():
-            vcd_size = self.vcd_file.stat().st_size
-            print(f"✓ Simulation complete (VCD: {vcd_size} bytes)\n")
-            return True
-        else:
-            print("⚠ VCD file not generated (may be normal for some tests)\n")
-            return True  # Not necessarily a failure
+        # 波形ファイル (VCD/FST) の生成結果を表示
+        # 生成された場合: "✓ Simulation complete (VCD|FST: N bytes)"
+        # 生成されなかった場合も失敗扱いにはしない (True を返す)
+        self.report_wave_file()
+        return True
 
     except subprocess.TimeoutExpired:
         print(f"✗ Simulation TIMEOUT (exceeded {timeout_seconds}s)")
@@ -1854,6 +1937,7 @@ def run_simulation(self):
 **主な変更点**:
 - `self.executable` → `self.get_executable_path()`: シミュレータ固有のパス取得
 - `self.verilator_config` → `self.sim_config`: シミュレータ非依存の設定参照
+- 実行ファイルに `get_run_args()` の `+dumpfile=<wave_file>` を渡す（波形フォーマット対応）
 
 #### 8.3.1. ⭐ 更新: 実行ファイルの構築
 
@@ -1901,43 +1985,44 @@ class VCSSimulator(BaseSimulator):
 
 #### 8.3.2. ⭐ 更新: 実行されるコマンド
 
-`subprocess.run([str(executable)], ...)` は各シミュレータの実行ファイルを起動します。
+`subprocess.run([str(executable)] + self.get_run_args(), ...)` は各シミュレータの実行ファイルを `+dumpfile=<波形パス>` 付きで起動します。
 
 **Verilator の場合**:
 ```bash
 # 作業ディレクトリ（cwd）: /home/rs133057/src/github.com/himmel17/sv_test1
-# 実行コマンド:
-./sim/obj_dir/Vcounter_tb
+# 実行コマンド（<project_root> は上記の絶対パス）:
+./sim/obj_dir/Vcounter_tb +dumpfile=<project_root>/sim/waves/counter.vcd
 ```
 
 **VCS の場合**:
 ```bash
 # 作業ディレクトリ（cwd）: /home/rs133057/src/github.com/himmel17/sv_test1
 # 実行コマンド:
-./sim/vcs/simv
+./sim/vcs/simv +dumpfile=<project_root>/sim/waves/counter.vcd
 ```
 
 **シェルで実行する場合の等価なコマンド**:
 ```bash
 cd /home/rs133057/src/github.com/himmel17/sv_test1
-./sim/obj_dir/Vcounter_tb  # Verilator
+./sim/obj_dir/Vcounter_tb +dumpfile=$PWD/sim/waves/counter.vcd  # Verilator
 # または
-./sim/vcs/simv              # VCS
+./sim/vcs/simv +dumpfile=$PWD/sim/waves/counter.vcd              # VCS
+# +dumpfile を省略するとテストベンチ既定の sim/waves/counter.vcd に出力される
 ```
 
 **実行ファイルの特性**:
 - **スタンドアロン実行ファイル**: 両シミュレータとも、単独で実行可能な実行ファイルを生成
-- **引数不要**: 実行ファイルはパラメータなしで起動（シミュレーション設定はコンパイル時に埋め込み済み）
+- **引数は波形パスのみ**: シミュレーション設定はコンパイル時に埋め込み済みで、実行時にフレームワークが渡すのは `+dumpfile=<波形パス>` だけ（省略時はテストベンチ既定パスで単独実行できる）
   - Verilator: `-GSIM_TIMEOUT=50000`
   - VCS: `+define+SIM_TIMEOUT=50000`
 - **作業ディレクトリ**: `cwd=self.project_root` により、プロジェクトルートから実行
-  - テストベンチ内の相対パス（`$dumpfile("sim/waves/counter.vcd")`）が正しく解決される
+  - 単独実行時の既定パス（`sim/waves/counter.vcd`）などテストベンチ内の相対パスが正しく解決される
 
 **実行例と出力**:
 ```bash
-$ ./sim/obj_dir/Vcounter_tb  # Verilator
+$ ./sim/obj_dir/Vcounter_tb +dumpfile=$PWD/sim/waves/counter.vcd  # Verilator
 # または
-$ ./sim/vcs/simv              # VCS
+$ ./sim/vcs/simv +dumpfile=$PWD/sim/waves/counter.vcd              # VCS
 
 Time:     100 ns  Count: 01  Overflow: 0
 Time:     200 ns  Count: 02  Overflow: 0
@@ -1950,44 +2035,42 @@ Time:   25600 ns  Count: 00  Overflow: 0
 *** PASSED: All tests passed successfully ***
 ```
 
-**VCD ファイルの生成**:
-実行ファイルが実行されると、テストベンチ内の以下のコードにより VCD ファイルが生成されます：
+**波形ファイルの生成**:
+実行ファイルが実行されると、テストベンチ内の以下のコードにより波形ファイル（VCD または FST）が生成されます。パスと拡張子はフレームワークが `+dumpfile=` で渡すため、テストベンチは拡張子を固定しません：
 
 ```systemverilog
 // counter_tb.sv 内
 initial begin
-    $dumpfile("sim/waves/counter.vcd");  // 相対パスで指定
+    string dumpfile;
+    if (!$value$plusargs("dumpfile=%s", dumpfile))
+        dumpfile = "sim/waves/counter.vcd";  // Default for standalone run
+    $dumpfile(dumpfile);
     $dumpvars(0, counter_tb);
 end
 ```
 
-作業ディレクトリがプロジェクトルートなので：
-```
-作業ディレクトリ: /home/rs133057/src/github.com/himmel17/sv_test1
-相対パス: sim/waves/counter.vcd
-→ 解決後の絶対パス: /home/rs133057/src/github.com/himmel17/sv_test1/sim/waves/counter.vcd
+フレームワーク経由の実行では、シミュレータクラスで構築された `self.wave_file` が `+dumpfile=` として渡されます：
+```python
+self.wave_file = self.waves_dir / f"{self.test_name}{WAVE_EXTENSIONS[self.wave_format]}"
+# 結果: /home/.../sv_test1/sim/waves/counter.vcd （--trace-fst 指定時は counter.fst）
 ```
 
-これは、シミュレータクラスで構築された `self.vcd_file` と一致します：
-```python
-self.vcd_file = self.waves_dir / f"{self.test_name}.vcd"
-# 結果: /home/.../sv_test1/sim/waves/counter.vcd
-```
+`+dumpfile=` を付けない単独実行では、既定の相対パス `sim/waves/counter.vcd` が使われます（作業ディレクトリがプロジェクトルートの場合に `/home/.../sv_test1/sim/waves/counter.vcd` へ解決される）。VCD/FST のどちらで書かれるかは `$dumpfile` ではなく Verilator のコンパイルフラグで決まります（[4.6](#46-波形フォーマットの選択vcd--fst) 参照）。
 
 ### 8.4. 波形表示フェーズ (`view_waveform()`)
 
 ```python
 def view_waveform(self):
-    """Open GTKWave to view waveform"""
-    if not self.vcd_file.exists():
-        print(f"✗ VCD file not found: {self.vcd_file}")
+    """Open GTKWave to view waveform (VCD or FST)"""
+    if not self.wave_file.exists():
+        print(f"✗ Waveform file not found: {self.wave_file}")
         return False
 
-    print(f"📊 Opening GTKWave with {self.vcd_file}...")
+    print(f"📊 Opening GTKWave with {self.wave_file}...")
 
     try:
         subprocess.Popen(
-            ["gtkwave", str(self.vcd_file)],
+            ["gtkwave", str(self.wave_file)],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL
         )
@@ -2121,20 +2204,24 @@ The testbench may have an infinite loop or insufficient timeout value
 - `execution_timeout` の値を増やす
 - `sim_timeout` の値を増やす
 
-### 9.6. VCD ファイルが生成されない
+### 9.6. 波形ファイル（VCD/FST）が生成されない
 
-**警告**:
+**警告**（`VCD` の部分は波形フォーマットにより `FST` になる）:
 ```
 ⚠ VCD file not generated (may be normal for some tests)
 ```
 
 **解決策**:
+- Verilator のフラグに `--trace`（VCD）または `--trace-fst`（FST）が含まれているか確認（`--trace-threads` は形式を選ばない）
 - テストベンチに `$dumpfile()` と `$dumpvars()` があるか確認
-- ファイルパスが `sim/waves/{test_name}.vcd` と一致しているか確認
+- `$dumpfile()` にパスを直書きせず、`+dumpfile=` plusarg で受け取っているか確認（フレームワークが渡す `sim/waves/{test_name}.vcd` / `.fst` と一致させるため）
 
 ```systemverilog
 initial begin
-    $dumpfile("sim/waves/counter.vcd");
+    string dumpfile;
+    if (!$value$plusargs("dumpfile=%s", dumpfile))
+        dumpfile = "sim/waves/counter.vcd";  // Default for standalone run
+    $dumpfile(dumpfile);
     $dumpvars(0, counter_tb);
 end
 ```
@@ -2314,7 +2401,7 @@ simulators:
       - --binary
       - --timing
       - -Wall
-      - --trace
+      - --trace                # VCD 出力。FST にする場合は --trace-fst（4.6 参照）
       - -Wno-TIMESCALEMOD
     execution_timeout: "30s"
 
@@ -2365,9 +2452,12 @@ tests:
 module mymodule_tb #(
     parameter SIM_TIMEOUT = 50000  // Default timeout
 );
-    // VCD dump
+    // Waveform dump (path/extension is passed by the framework via +dumpfile=)
     initial begin
-        $dumpfile("sim/waves/mymodule.vcd");
+        string dumpfile;
+        if (!$value$plusargs("dumpfile=%s", dumpfile))
+            dumpfile = "sim/waves/mymodule.vcd";  // Default for standalone run
+        $dumpfile(dumpfile);
         $dumpvars(0, mymodule_tb);
     end
 

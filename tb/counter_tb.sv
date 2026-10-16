@@ -31,9 +31,14 @@ module counter_tb #(
         forever #5 clk = ~clk;
     end
 
-    // VCD dump for GTKWave
+    // Waveform dump for GTKWave
+    // Path (and .vcd/.fst extension) is passed by the framework via +dumpfile=.
+    // VCD/FST format itself is chosen by Verilator's --trace / --trace-fst flag.
     initial begin
-        $dumpfile("sim/waves/counter.vcd");
+        string dumpfile;
+        if (!$value$plusargs("dumpfile=%s", dumpfile))
+            dumpfile = "sim/waves/counter.vcd";  // Default for standalone run
+        $dumpfile(dumpfile);
         $dumpvars(0, counter_tb);
     end
 

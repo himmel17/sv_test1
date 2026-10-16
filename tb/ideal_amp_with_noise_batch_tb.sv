@@ -93,11 +93,16 @@ module ideal_amp_with_noise_batch_tb #(
     always #5 clk = ~clk;
 
     //==========================================================================
-    // VCD WAVEFORM DUMP - BATCH VERSION
+    // WAVEFORM DUMP (VCD / FST) - BATCH VERSION
     //==========================================================================
-    // CRITICAL: Filename must match test name in test_config.yaml
+    // Path (and .vcd/.fst extension) is passed by the framework via +dumpfile=.
+    // VCD/FST format itself is chosen by Verilator's --trace / --trace-fst flag.
+    // NOTE: scripts/verify_noise_match_batch.py parses VCD only (requires --trace).
     initial begin
-        $dumpfile("sim/waves/ideal_amp_with_noise_batch.vcd");
+        string dumpfile;
+        if (!$value$plusargs("dumpfile=%s", dumpfile))
+            dumpfile = "sim/waves/ideal_amp_with_noise_batch.vcd";  // Default for standalone run
+        $dumpfile(dumpfile);
         $dumpvars(0, ideal_amp_with_noise_batch_tb);
     end
 

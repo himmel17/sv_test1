@@ -98,10 +98,11 @@ module sine_wave_gen_tb #(
     always #5 clk = ~clk;
 
     //==========================================================================
-    // VCD WAVEFORM DUMP
+    // WAVEFORM DUMP (VCD / FST)
     //==========================================================================
-    // IMPORTANT: The filename must match the test name in test_config.yaml
-    // Format: "sim/waves/{test_name}.vcd"
+    // The framework passes the path via plusarg: +dumpfile=sim/waves/{test_name}.{vcd|fst}
+    // - The extension follows Verilator's flag: --trace → .vcd, --trace-fst → .fst
+    // - The default below is used only when the simulation runs standalone
     //
     // This allows:
     // 1. Each test to have its own waveform file
@@ -109,7 +110,10 @@ module sine_wave_gen_tb #(
     // 3. No filename conflicts between tests
     //
     initial begin
-        $dumpfile("sim/waves/sine_wave_gen.vcd");
+        string dumpfile;
+        if (!$value$plusargs("dumpfile=%s", dumpfile))
+            dumpfile = "sim/waves/sine_wave_gen.vcd";
+        $dumpfile(dumpfile);
         $dumpvars(0, sine_wave_gen_tb);  // Dump all signals in this module
     end
 
