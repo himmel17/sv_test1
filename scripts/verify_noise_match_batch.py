@@ -9,7 +9,7 @@ Key Differences from Streaming Version (verify_noise_match.py):
 - Sample count: 4096 (vs 1024 for streaming)
 - Comparison: Exact sample-by-sample (vs statistical RMS/spectral)
 - Tolerance: 1e-9 V absolute (vs 10% RMS for streaming)
-- Files: scripts/flicker_noise_batch_reference.npy, ideal_amp_with_noise_batch.vcd
+- Files: scripts/flicker_noise_batch_reference.npy, ideal_amp_with_noise_batch.{fst|vcd}
 - Outputs: scripts/flicker_noise_batch_verification.png, scripts/flicker_noise_batch_verification.log
 
 Verification Strategy:
@@ -23,9 +23,12 @@ Author: Generated for SerDes flicker noise PoC - Batch Mode
 
 import numpy as np
 import matplotlib.pyplot as plt
-from vcdvcd import VCDVCD
 from pathlib import Path
 import sys
+
+from waveform_reader import find_wave_file, read_signals
+
+TEST_NAME = 'ideal_amp_with_noise_batch'
 
 # Test parameters (must match generate_flicker_noise_batch.py and testbench)
 SAMPLE_RATE = 100e6
@@ -33,50 +36,43 @@ EXPECTED_RMS = 0.25
 GAIN = 10.0
 DC_INPUT = 0.5
 SAMPLE_COUNT = 4096  # Changed from 1024 for batch mode
-# VCD skip count: Find where DPI-C CALL 0 appears in amp_out
-# VCD structure:
+# Skip count of value changes: Find where DPI-C CALL 0 appears in amp_out
+# Value-change structure (same for VCD and FST):
 #   Index 0: Initial value (0V, during reset)
 #   Index 1: Reset released, amp_out uses noise_sample=0 (before DPI-C CALL 0)
 #   Index 2: amp_out uses noise from DPI-C CALL 0 (matches Python[0])
 #   Therefore, skip first 2 samples to align with Python[0]
-RESET_SKIP_VCD = 2  # Skip to reach DPI-C CALL 0 in amp_out
+RESET_SKIP_SAMPLES = 2  # Skip to reach DPI-C CALL 0 in amp_out
 
 
-def parse_vcd_noise(vcd_path):
+def parse_wave_noise(wave_path):
     """
-    Extract noise component from VCD file.
+    Extract noise component from waveform file (VCD or FST).
 
     Args:
-        vcd_path: Path to VCD file
+        wave_path: Path to VCD or FST file
 
     Returns:
         numpy.ndarray: Noise samples (amp_out - amp_out_ideal)
     """
-    print(f"[1/6] Parsing VCD file: {vcd_path}")
-
-    try:
-        vcd = VCDVCD(vcd_path)
-    except Exception as e:
-        print(f"ERROR: Failed to parse VCD file: {e}")
-        return None
-
-    # Debug: print available signals
-    print("Available signals:", list(vcd.references_to_ids.keys())[:20])  # First 20
+    print(f"[1/6] Parsing waveform file: {wave_path}")
 
     # Extract signals (adjust hierarchy for batch testbench)
     try:
-        amp_out = vcd['ideal_amp_with_noise_batch_tb.amp_out']
-        amp_out_ideal = vcd['ideal_amp_with_noise_batch_tb.amp_out_ideal']
+        signals = read_signals(wave_path, [
+            'ideal_amp_with_noise_batch_tb.amp_out',
+            'ideal_amp_with_noise_batch_tb.amp_out_ideal',
+        ])
     except KeyError as e:
-        print(f"ERROR: Signal not found in VCD: {e}")
-        print("Available signals:")
-        for sig in vcd.references_to_ids.keys():
-            print(f"  - {sig}")
+        print(f"ERROR: {e.args[0]}")
+        return None
+    except Exception as e:
+        print(f"ERROR: Failed to parse waveform file: {e}")
         return None
 
     # Get time-series data
-    amp_out_tv = amp_out.tv
-    amp_out_ideal_tv = amp_out_ideal.tv
+    amp_out_tv = signals['ideal_amp_with_noise_batch_tb.amp_out']
+    amp_out_ideal_tv = signals['ideal_amp_with_noise_batch_tb.amp_out_ideal']
 
     # amp_out_ideal may be constant (DC value), so get its value
     if len(amp_out_ideal_tv) > 0:
@@ -89,13 +85,13 @@ def parse_vcd_noise(vcd_path):
 
     # Extract noise: out - out_ideal
     # amp_out_ideal is constant (DC = GAIN × DC_INPUT)
-    # Skip first RESET_SKIP_VCD samples to reach DPI-C CALL 0 in amp_out
+    # Skip first RESET_SKIP_SAMPLES samples to reach DPI-C CALL 0 in amp_out
     # RTL has 1-sample lag: amp_out at clock i contains noise from DPI-C call i-1
-    # So VCD Index 2 contains noise from DPI-C CALL 0 (= Python[0])
+    # So Index 2 contains noise from DPI-C CALL 0 (= Python[0])
     noise_sv = []
     for i, (time, val_out) in enumerate(amp_out_tv):
         # Skip to reach DPI-C CALL 0
-        if i < RESET_SKIP_VCD:
+        if i < RESET_SKIP_SAMPLES:
             continue
 
         # Convert to float
@@ -104,7 +100,7 @@ def parse_vcd_noise(vcd_path):
         except (ValueError, TypeError):
             continue
 
-    print(f"      Extracted {len(noise_sv)} noise samples (skipped first {RESET_SKIP_VCD} samples)")
+    print(f"      Extracted {len(noise_sv)} noise samples (skipped first {RESET_SKIP_SAMPLES} samples)")
     return np.array(noise_sv)
 
 
@@ -199,14 +195,14 @@ def main():
     noise_python = np.load(ref_path)
     print(f"[INFO] Loaded Python reference: {len(noise_python)} samples from {ref_path}")
 
-    # Load SystemVerilog from VCD
-    vcd_path = 'sim/waves/ideal_amp_with_noise_batch.vcd'
-    if not Path(vcd_path).exists():
-        print(f"ERROR: VCD file not found: {vcd_path}")
-        print("Run test first: uv run python3 scripts/run_test.py --test ideal_amp_with_noise_batch")
+    # Load SystemVerilog from waveform (sim/waves/{TEST_NAME}.fst or .vcd)
+    wave_path = find_wave_file(TEST_NAME)
+    if wave_path is None:
+        print(f"ERROR: Waveform file not found: sim/waves/{TEST_NAME}.fst or .vcd")
+        print(f"Run test first: uv run python3 scripts/run_test.py --test {TEST_NAME}")
         return 1
 
-    noise_sv = parse_vcd_noise(vcd_path)
+    noise_sv = parse_wave_noise(wave_path)
     if noise_sv is None:
         return 1
 
@@ -367,7 +363,7 @@ def main():
         log.write("=" * 80 + "\n")
         log.write(f"Timestamp: {timestamp}\n")
         log.write(f"Python Reference: {ref_path}\n")
-        log.write(f"VCD File: {vcd_path}\n")
+        log.write(f"Waveform File: {wave_path}\n")
         log.write(f"Verification Plot: {plot_path}\n")
         log.write("=" * 80 + "\n\n")
 
@@ -376,7 +372,7 @@ def main():
         log.write(f"  Total samples:     {n_samples}\n")
         log.write(f"  Sample rate:       {SAMPLE_RATE/1e6:.0f} MHz\n")
         log.write(f"  Expected RMS:      {EXPECTED_RMS} V\n")
-        log.write(f"  VCD reset skip:    {RESET_SKIP_VCD} samples\n")
+        log.write(f"  Reset skip:        {RESET_SKIP_SAMPLES} samples\n")
         log.write(f"  Gain:              {GAIN}\n")
         log.write(f"  DC Input:          {DC_INPUT} V\n")
         log.write("\n")

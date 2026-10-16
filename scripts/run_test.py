@@ -92,23 +92,23 @@ class TestRunner:
 
         # Test attributes (for reporting)
         self.test_name = test_config['name']
-        self.vcd_file = self.simulator.vcd_file
+        self.wave_file = self.simulator.wave_file
 
     def clean(self):
         """Clean simulation artifacts for this test"""
         self.simulator.clean()
 
     def view_waveform(self):
-        """Open GTKWave to view waveform"""
-        if not self.vcd_file.exists():
-            print(f"✗ VCD file not found: {self.vcd_file}")
+        """Open GTKWave to view waveform (VCD or FST)"""
+        if not self.wave_file.exists():
+            print(f"✗ Waveform file not found: {self.wave_file}")
             return False
 
-        print(f"📊 Opening GTKWave with {self.vcd_file}...")
+        print(f"📊 Opening GTKWave with {self.wave_file}...")
 
         try:
             subprocess.Popen(
-                ["gtkwave", str(self.vcd_file)],
+                ["gtkwave", str(self.wave_file)],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL
             )
@@ -138,7 +138,7 @@ class TestRunner:
             return False
 
         # View waveform if requested
-        if view and self.vcd_file.exists():
+        if view and self.wave_file.exists():
             self.view_waveform()
 
         return True

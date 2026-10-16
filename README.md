@@ -16,6 +16,8 @@ cd sv_test1
 sudo apt install git help2man perl python3 make autoconf g++ flex bison ccache
 # Ubuntu向けの追加パッケージ（エラーが出ても無視してOK）
 sudo apt install libfl2 libfl-dev zlib1g zlib1g-dev
+# FST 波形出力（--trace-fst、本プロジェクトの既定）に必要（無いと fatal error: lz4.h でビルド失敗。Verilator 5.052 で確認）
+sudo apt install -y liblz4-dev
 # 性能向上用（オプションだが推奨）
 sudo apt install libgoogle-perftools-dev numactl perl-doc
 
@@ -81,7 +83,7 @@ uv run python3 scripts/run_test.py --test counter --view  # 特定テストを�
 ├── sim/                  # シミュレーション出力（gitignore対象）
 │   ├── obj_dir/          # Verilatorコンパイル成果物
 │   ├── vcs/              # VCSコンパイル成果物
-│   └── waves/            # VCD波形ファイル
+│   └── waves/            # 波形ファイル（VCD / FST）
 ├── scripts/              # テスト管理スクリプト
 │   ├── run_test.py       # メインテスト実行スクリプト（オーケストレータ）
 │   ├── simulators.py     # シミュレータ抽象化レイヤー（Verilator/VCS）
@@ -92,6 +94,7 @@ uv run python3 scripts/run_test.py --test counter --view  # 特定テストを�
 │   ├── generate_custom_noise.py   # 任意スペクトル整形ノイズ生成（実験的、テスト未接続）
 │   ├── verify_noise_match.py      # 統計検証スクリプト（ストリーミング版）
 │   ├── verify_noise_match_batch.py  # 厳密一致検証スクリプト（バッチ版）
+│   ├── waveform_reader.py         # 波形読み込み共通モジュール（FST / VCD、pywellen）
 │   └── flicker_noise_*.{npy,png,log}  # 生成される検証データ（scripts/内）
 ├── ref/                  # ローカル参照資料（外部設計データ、git管理外）
 ├── pyproject.toml        # Python依存関係定義（推奨、Python 3.12+）
@@ -106,10 +109,10 @@ uv run python3 scripts/run_test.py --test counter --view  # 特定テストを�
 
 ## 必要な環境
 
-- **Verilator** 5.0以上（検証済み: 5.042）— `--timing`, `--binary` を使用するため 5.0 以上が必須
+- **Verilator** 5.0以上（検証済み: 5.042, 5.052）— `--timing`, `--binary` を使用するため 5.0 以上が必須
 - **GTKWave** 3.3以上（検証済み: 3.3.104）
 - **Python** 3.12以上（`pyproject.toml` の `requires-python = ">=3.12.11"` に準拠）
-  - 主な依存: pyyaml, numpy, scipy, matplotlib, vcdvcd, pyqt6（`uv sync` で自動インストール）
+  - 主な依存: pyyaml, numpy, scipy, matplotlib, pywellen（VCD / FST 読み込み）, pyqt6（`uv sync` で自動インストール）
 - **Synopsys VCS**（オプション）— `--simulator vcs` 指定時のみ必要
 
 ## インストール
@@ -317,7 +320,7 @@ uv run python3 scripts/run_test.py --test sine_wave_gen
 - ✅ **1/fノイズ**: フリッカノイズ生成のためのVoss-McCARTNEYアルゴリズム実装
 - ✅ **Python プロトタイプ → C実装**: アルゴリズム検証ワークフロー
 - ✅ **統計的検証**: RMSとスペクトル傾きの比較（サンプル単位ではない）
-- ✅ **VCDベース解析**: シミュレーション波形からデータ抽出して検証
+- ✅ **波形ベース解析**: シミュレーション波形（FST / VCD、pywellen で読み込み）からデータ抽出して検証
 - ✅ **スペクトル解析**: FFTベースのパワースペクトル密度検証
 - ✅ **リセット処理**: 解析からリセットトランジェントを適切に除外
 
@@ -329,7 +332,7 @@ uv run python3 scripts/generate_flicker_noise.py
 
 # ステップ2: DPI-Cノイズ注入付きSystemVerilogシミュレーション実行
 uv run python3 scripts/run_test.py --test ideal_amp_with_noise
-# 出力: sim/waves/ideal_amp_with_noise.vcd
+# 出力: sim/waves/ideal_amp_with_noise.fst（--trace の場合は .vcd）
 
 # ステップ3: PythonとSystemVerilogの統計的比較
 uv run python3 scripts/verify_noise_match.py
@@ -350,7 +353,7 @@ uv run python3 scripts/generate_flicker_noise_batch.py
 
 # ステップ2: SystemVerilogシミュレーション実行
 uv run python3 scripts/run_test.py --test ideal_amp_with_noise_batch
-# 出力: sim/waves/ideal_amp_with_noise_batch.vcd
+# 出力: sim/waves/ideal_amp_with_noise_batch.fst（--trace の場合は .vcd）
 
 # ステップ3: 厳密一致検証
 uv run python3 scripts/verify_noise_match_batch.py
@@ -400,7 +403,7 @@ uv run python3 scripts/verify_noise_match_batch.py
 
 - **リセットスキップ**: テストベンチは1044サンプル収集（リセットスキップ20 + 有効1024）
 
-- **VCD解析**: 最初の10サンプル（リセット期間）をスキップしてsample_counter値を整列
+- **波形解析**: 最初の10サンプル（リセット期間）をスキップしてsample_counter値を整列
 
 **用途**: SerDes/RFアプリケーションのデジタルシミュレーションでアナログ効果（ノイズ、ジッタ）をモデル化する方法を実演
 
@@ -427,7 +430,7 @@ simulators:
       - --binary
       - --timing
       - -Wall
-      - --trace
+      - --trace-fst        # 波形形式: --trace → .vcd / --trace-fst → .fst
       - -Wno-TIMESCALEMOD
     execution_timeout: "30s"  # Verilator実行のフリーズ対策（実時間）
 
@@ -494,7 +497,8 @@ tests:
 2. **テストベンチを作成**: `tb/`にテストベンチファイルを追加
    - パラメータ化されたタイムアウトを含める: `module xxx_tb #(parameter SIM_TIMEOUT = xxxx);`
    - `timescale 1ns / 1ps`を含める
-   - VCDダンプパスを正しく設定: `$dumpfile("sim/waves/{test_name}.vcd")`
+   - 波形ダンプパスは plusarg で受け取る（フレームワークが `+dumpfile=sim/waves/{test_name}.{vcd|fst}` を渡す。雛形は `tb/counter_tb.sv`）:
+     `if (!$value$plusargs("dumpfile=%s", dumpfile)) dumpfile = "sim/waves/{test_name}.vcd"; $dumpfile(dumpfile);`
    - タイムアウト処理: `initial begin #SIM_TIMEOUT; $display("ERROR: ..."); $finish; end`
    - サブディレクトリ構造をサポート（例: `tb/tx/`, `tb/rx/`）
 
@@ -541,9 +545,18 @@ tests:
 - SystemVerilog構文を確認
 - `--timing`オプションが必要（Verilator 5.0以上）
 
-### VCDファイルが生成されない
+### 波形ファイル（VCD / FST）が生成されない・形式が違う
 - `sim/waves/`ディレクトリの存在を確認
-- テストベンチの`$dumpfile()`パスを確認
+- テストベンチが `$value$plusargs("dumpfile=%s", ...)` で受け取ったパスを `$dumpfile()` に渡しているか確認
+- 形式は Verilator フラグで決まる: `--trace`（`--trace-vcd`）→ `.vcd`、`--trace-fst` → `.fst`
+  - `common_flags` と `verilator_extra_flags` の両方に VCD/FST フラグがあると FST になる（警告表示）
+  - `--trace-threads` は形式を選ばない（Verilator 5.052 では非推奨・無効で、`-Wall` 下では警告によりビルドが止まる）
+- テスト単位で形式を固定するには、テスト定義に `wave_format: vcd`（または `fst`）を書く
+  - 共通フラグの `--trace` / `--trace-vcd` / `--trace-fst` が、指定した形式のフラグに差し替わる
+  - 共通フラグが `--trace-fst` のとき、`verilator_extra_flags` に `--trace` を足しても VCD にはならない（FST が優先されるため）
+- `scripts/verify_noise_match*.py` は `sim/waves/{test_name}.fst` / `.vcd` のうち存在する方を pywellen で読む（`scripts/waveform_reader.py`）。両方ある場合は新しい方を使い、警告を出す
+- FST のビルドで `fatal error: lz4.h: No such file or directory` が出る場合は lz4 の開発ヘッダを入れる（Verilator 5.052 で確認）:
+  `sudo apt install -y liblz4-dev`
 
 ### GTKWaveが起動しない
 - `gtkwave --version`でインストールを確認

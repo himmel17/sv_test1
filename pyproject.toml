@@ -8,6 +8,7 @@ dependencies = [
     "matplotlib>=3.10.7",
     "numpy>=2.3.5",
     "pyqt6>=6.10.0",
+    "pywellen>=0.25.7",
     "pyyaml>=6.0",
     "scipy>=1.16.3",
     "vcdvcd>=2.6.0",
