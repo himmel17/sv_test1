@@ -16,6 +16,8 @@ cd sv_test1
 sudo apt install git help2man perl python3 make autoconf g++ flex bison ccache
 # Ubuntu向けの追加パッケージ（エラーが出ても無視してOK）
 sudo apt install libfl2 libfl-dev zlib1g zlib1g-dev
+# FST 波形出力（--trace-fst、本プロジェクトの既定）に必要（無いと fatal error: lz4.h でビルド失敗。Verilator 5.052 で確認）
+sudo apt install -y liblz4-dev
 # 性能向上用（オプションだが推奨）
 sudo apt install libgoogle-perftools-dev numactl perl-doc
 
